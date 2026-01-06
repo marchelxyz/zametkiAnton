@@ -502,15 +502,27 @@
 
         // Проверяем, запущено ли приложение в Telegram
         function checkTelegramEnvironment() {
-            // Проверяем наличие initData или initDataUnsafe с данными пользователя
-            isInTelegram = !!(tg.initData && tg.initData.length > 0) || 
-                           !!(tg.initDataUnsafe && tg.initDataUnsafe.user);
+            // ВАЖНО: Проверяем ТОЛЬКО initData, т.к. именно она используется для авторизации
+            // initDataUnsafe может быть доступна даже когда initData пустая
+            const hasInitData = !!(tg.initData && tg.initData.length > 0);
             
             console.log('[TG] initData length:', tg.initData ? tg.initData.length : 0);
-            console.log('[TG] isInTelegram:', isInTelegram);
+            console.log('[TG] initDataUnsafe.user:', tg.initDataUnsafe ? JSON.stringify(tg.initDataUnsafe.user) : 'null');
             console.log('[TG] platform:', tg.platform);
+            console.log('[TG] version:', tg.version);
             
-            if (!isInTelegram) {
+            // Проверяем, есть ли у нас валидная initData для авторизации
+            if (hasInitData) {
+                isInTelegram = true;
+                console.log('[TG] initData доступна, авторизация возможна');
+            } else if (tg.initDataUnsafe && tg.initDataUnsafe.user) {
+                // initDataUnsafe есть, но initData пустая - это проблема
+                // Такое может быть при определённых условиях (старые версии, тестовый режим)
+                isInTelegram = false;
+                console.warn('[TG] ВНИМАНИЕ: initDataUnsafe доступна, но initData пустая!');
+                console.warn('[TG] Это может означать проблему с версией Telegram или WebApp SDK');
+            } else {
+                isInTelegram = false;
                 console.warn('[TG] Приложение открыто вне Telegram. initData недоступна.');
             }
             
@@ -520,32 +532,78 @@
         // Показать предупреждение, если приложение открыто вне Telegram
         function showNotInTelegramWarning() {
             const notesLoading = document.getElementById('notes-loading');
-            notesLoading.innerHTML = `
-                <div style="text-align: center; padding: 40px 20px;">
-                    <div style="font-size: 48px; margin-bottom: 16px;">⚠️</div>
-                    <div style="font-size: 16px; color: var(--tg-theme-text-color); margin-bottom: 12px;">
-                        <b>Откройте в Telegram</b>
+            
+            // Проверяем, есть ли initDataUnsafe (частичные данные)
+            const hasPartialData = !!(tg.initDataUnsafe && tg.initDataUnsafe.user);
+            
+            let warningHtml;
+            
+            if (hasPartialData) {
+                // initDataUnsafe есть, но initData пустая - особый случай
+                warningHtml = `
+                    <div style="text-align: center; padding: 40px 20px;">
+                        <div style="font-size: 48px; margin-bottom: 16px;">🔄</div>
+                        <div style="font-size: 16px; color: var(--tg-theme-text-color); margin-bottom: 12px;">
+                            <b>Перезапустите приложение</b>
+                        </div>
+                        <div style="font-size: 14px; color: var(--tg-theme-hint-color);">
+                            Данные авторизации недоступны.<br><br>
+                            Пожалуйста, закройте это окно<br>
+                            и откройте приложение заново<br>
+                            через меню бота в Telegram.<br><br>
+                            <span style="font-size: 12px;">
+                                Если проблема повторяется,<br>
+                                попробуйте обновить Telegram.
+                            </span>
+                        </div>
                     </div>
-                    <div style="font-size: 14px; color: var(--tg-theme-hint-color);">
-                        Это приложение работает только<br>как Telegram Mini App.<br><br>
-                        Откройте бота и запустите<br>приложение через меню.
+                `;
+            } else {
+                // Приложение открыто вне Telegram
+                warningHtml = `
+                    <div style="text-align: center; padding: 40px 20px;">
+                        <div style="font-size: 48px; margin-bottom: 16px;">⚠️</div>
+                        <div style="font-size: 16px; color: var(--tg-theme-text-color); margin-bottom: 12px;">
+                            <b>Откройте в Telegram</b>
+                        </div>
+                        <div style="font-size: 14px; color: var(--tg-theme-hint-color);">
+                            Это приложение работает только<br>как Telegram Mini App.<br><br>
+                            Откройте бота и запустите<br>приложение через меню.
+                        </div>
                     </div>
-                </div>
-            `;
+                `;
+            }
+            
+            notesLoading.innerHTML = warningHtml;
         }
 
         // Получаем initData для авторизации
         function getInitData() {
+            // Пробуем получить initData напрямую от Telegram WebApp
             const initData = tg.initData || '';
+            
             if (!initData) {
                 console.warn('[TG] getInitData: initData пустая');
+                console.warn('[TG] tg.platform:', tg.platform);
+                console.warn('[TG] tg.version:', tg.version);
+                console.warn('[TG] window.Telegram:', typeof window.Telegram);
+            } else {
+                console.log('[TG] getInitData: initData получена, длина:', initData.length);
             }
+            
             return initData;
         }
 
         // API вызовы
         async function apiCall(method, endpoint, data = null) {
             const initData = getInitData();
+            
+            // Предупреждение если initData пустая
+            if (!initData) {
+                console.error('[API] ВНИМАНИЕ: Делаем запрос без initData!');
+                console.error('[API] endpoint:', endpoint);
+                console.error('[API] Это приведёт к ошибке 401');
+            }
             
             const options = {
                 method: method,
@@ -559,6 +617,8 @@
                 options.body = JSON.stringify(data);
             }
 
+            console.log('[API]', method, endpoint, 'initData length:', initData.length);
+            
             const response = await fetch(endpoint, options);
             const result = await response.json();
             
@@ -568,8 +628,14 @@
                 
                 // Специальная обработка ошибки авторизации
                 if (response.status === 401) {
-                    errorMessage = 'Ошибка авторизации. Пожалуйста, перезапустите приложение через Telegram.';
-                    console.error('[API] Ошибка 401. initData length:', initData.length);
+                    errorMessage = 'Ошибка авторизации. Пожалуйста, закройте и заново откройте приложение через Telegram.';
+                    console.error('[API] Ошибка 401 (Unauthorized)');
+                    console.error('[API] initData length:', initData.length);
+                    console.error('[API] initData preview:', initData.substring(0, 50));
+                    console.error('[API] Возможные причины:');
+                    console.error('[API] 1. Приложение открыто вне Telegram');
+                    console.error('[API] 2. initData не передана в заголовке');
+                    console.error('[API] 3. initData устарела или некорректна');
                 }
                 
                 throw new Error(errorMessage);
@@ -1035,25 +1101,38 @@
             }
         }
 
-        // Инициализация приложения
+        // Инициализация приложения с несколькими попытками
+        let initAttempts = 0;
+        const MAX_INIT_ATTEMPTS = 3;
+        const INIT_DELAY_MS = 200;
+        
         function initApp() {
-            // Небольшая задержка для полной инициализации Telegram SDK
-            setTimeout(() => {
-                const inTelegram = checkTelegramEnvironment();
-                
-                if (!inTelegram) {
-                    // Показываем предупреждение, что приложение должно быть открыто в Telegram
-                    showNotInTelegramWarning();
-                    return;
-                }
-                
+            initAttempts++;
+            console.log(`[INIT] Попытка инициализации ${initAttempts}/${MAX_INIT_ATTEMPTS}`);
+            
+            const inTelegram = checkTelegramEnvironment();
+            
+            if (inTelegram) {
+                console.log('[INIT] Успешная инициализация в Telegram');
                 // Загружаем заметки при старте
                 loadNotes();
-            }, 100);
+                return;
+            }
+            
+            // Если initData ещё нет, но есть попытки - пробуем ещё раз
+            if (initAttempts < MAX_INIT_ATTEMPTS) {
+                console.log(`[INIT] initData не доступна, повторная попытка через ${INIT_DELAY_MS}ms...`);
+                setTimeout(initApp, INIT_DELAY_MS);
+                return;
+            }
+            
+            // Исчерпаны все попытки
+            console.error('[INIT] Не удалось получить initData после всех попыток');
+            showNotInTelegramWarning();
         }
 
-        // Запускаем инициализацию
-        initApp();
+        // Запускаем инициализацию с небольшой задержкой для загрузки Telegram SDK
+        setTimeout(initApp, 100);
     </script>
 </body>
 </html>

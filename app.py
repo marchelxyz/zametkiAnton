@@ -93,8 +93,12 @@ def verify_telegram_data(init_data: str) -> dict:
             # В режиме отладки возвращаем тестовые данные
             print(f"[DEBUG] init_data пустая, используем тестовые данные (DEBUG режим)")
             return {"id": 123456789, "first_name": "Debug", "username": "debuguser"}
-        print(f"[ERR] Ошибка верификации: init_data пустая или некорректная. "
-              f"Убедитесь, что приложение открыто через Telegram Mini App.")
+        # Более информативное логирование
+        init_data_preview = init_data[:50] if init_data else "(пустая)"
+        print(f"Ошибка верификации: init_data пустая или некорректная")
+        print(f"  - init_data длина: {len(init_data) if init_data else 0}")
+        print(f"  - init_data превью: {init_data_preview}")
+        print(f"  - Убедитесь, что приложение открыто через Telegram Mini App")
         return None
     
     try:
@@ -255,6 +259,34 @@ def api_delete_note(note_id):
 def health():
     """Health check для Railway"""
     return jsonify({"status": "ok"})
+
+
+@app.route('/api/debug/auth', methods=['GET'])
+def debug_auth():
+    """Диагностика авторизации (только для отладки)"""
+    init_data = request.headers.get('X-Telegram-Init-Data', '')
+    
+    debug_info = {
+        "init_data_present": bool(init_data),
+        "init_data_length": len(init_data) if init_data else 0,
+        "init_data_has_equals": '=' in init_data if init_data else False,
+        "bot_token_configured": bool(BOT_TOKEN),
+        "debug_mode": os.getenv("DEBUG", "false").lower() == "true"
+    }
+    
+    # Не показываем содержимое init_data в продакшене
+    if os.getenv("DEBUG", "false").lower() == "true":
+        debug_info["init_data_preview"] = init_data[:100] if init_data else None
+    
+    # Пробуем верифицировать
+    user = verify_telegram_data(init_data)
+    debug_info["verification_success"] = user is not None
+    
+    if user:
+        debug_info["user_id"] = user.get('id')
+        debug_info["user_name"] = user.get('first_name')
+    
+    return jsonify(debug_info)
 
 
 # ==================== API для задач ====================
