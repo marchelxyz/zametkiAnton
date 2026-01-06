@@ -12,13 +12,13 @@ if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
 # Создаём движок базы данных
-engine = create_engine(DATABASE_URL)
+engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 
 # Создаём базовый класс для моделей
 Base = declarative_base()
 
-# Создаём сессию
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+# Создаём сессию с expire_on_commit=False чтобы объекты оставались доступными после commit
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine, expire_on_commit=False)
 
 
 class Note(Base):
@@ -50,8 +50,12 @@ class Task(Base):
 
 def init_db():
     """Инициализация базы данных - создание таблиц"""
-    Base.metadata.create_all(bind=engine)
-    print("База данных инициализирована!")
+    try:
+        Base.metadata.create_all(bind=engine)
+        print("[OK] База данных инициализирована! Таблицы: notes, tasks")
+    except Exception as e:
+        print(f"[ERROR] Ошибка инициализации базы данных: {e}")
+        raise
 
 
 def get_db():
@@ -72,7 +76,13 @@ def create_note(user_id: int, title: str, content: str = "") -> Note:
         db.add(note)
         db.commit()
         db.refresh(note)
+        # Делаем объект detached но с загруженными данными
+        db.expunge(note)
         return note
+    except Exception as e:
+        db.rollback()
+        print(f"[ERROR] Ошибка создания заметки: {e}")
+        raise
     finally:
         db.close()
 
@@ -82,7 +92,13 @@ def get_notes_by_user(user_id: int) -> list:
     db = SessionLocal()
     try:
         notes = db.query(Note).filter(Note.user_id == user_id).order_by(Note.created_at.desc()).all()
+        # Делаем объекты detached но с загруженными данными
+        for note in notes:
+            db.expunge(note)
         return notes
+    except Exception as e:
+        print(f"[ERROR] Ошибка получения заметок: {e}")
+        return []
     finally:
         db.close()
 
@@ -92,7 +108,12 @@ def get_note_by_id(note_id: int, user_id: int) -> Note:
     db = SessionLocal()
     try:
         note = db.query(Note).filter(Note.id == note_id, Note.user_id == user_id).first()
+        if note:
+            db.expunge(note)
         return note
+    except Exception as e:
+        print(f"[ERROR] Ошибка получения заметки: {e}")
+        return None
     finally:
         db.close()
 
@@ -110,7 +131,12 @@ def update_note(note_id: int, user_id: int, title: str = None, content: str = No
             note.updated_at = datetime.utcnow()
             db.commit()
             db.refresh(note)
+            db.expunge(note)
         return note
+    except Exception as e:
+        db.rollback()
+        print(f"[ERROR] Ошибка обновления заметки: {e}")
+        return None
     finally:
         db.close()
 
@@ -124,6 +150,10 @@ def delete_note(note_id: int, user_id: int) -> bool:
             db.delete(note)
             db.commit()
             return True
+        return False
+    except Exception as e:
+        db.rollback()
+        print(f"[ERROR] Ошибка удаления заметки: {e}")
         return False
     finally:
         db.close()
@@ -147,7 +177,12 @@ def create_task(user_id: int, title: str, description: str = "", interval_minute
         db.add(task)
         db.commit()
         db.refresh(task)
+        db.expunge(task)
         return task
+    except Exception as e:
+        db.rollback()
+        print(f"[ERROR] Ошибка создания задачи: {e}")
+        raise
     finally:
         db.close()
 
@@ -160,7 +195,12 @@ def get_tasks_by_user(user_id: int, active_only: bool = True) -> list:
         if active_only:
             query = query.filter(Task.is_active == True)
         tasks = query.order_by(Task.created_at.desc()).all()
+        for task in tasks:
+            db.expunge(task)
         return tasks
+    except Exception as e:
+        print(f"[ERROR] Ошибка получения задач: {e}")
+        return []
     finally:
         db.close()
 
@@ -170,7 +210,12 @@ def get_task_by_id(task_id: int, user_id: int) -> Task:
     db = SessionLocal()
     try:
         task = db.query(Task).filter(Task.id == task_id, Task.user_id == user_id).first()
+        if task:
+            db.expunge(task)
         return task
+    except Exception as e:
+        print(f"[ERROR] Ошибка получения задачи: {e}")
+        return None
     finally:
         db.close()
 
@@ -196,7 +241,12 @@ def update_task(task_id: int, user_id: int, title: str = None, description: str 
             task.updated_at = datetime.utcnow()
             db.commit()
             db.refresh(task)
+            db.expunge(task)
         return task
+    except Exception as e:
+        db.rollback()
+        print(f"[ERROR] Ошибка обновления задачи: {e}")
+        return None
     finally:
         db.close()
 
@@ -211,6 +261,10 @@ def delete_task(task_id: int, user_id: int) -> bool:
             db.commit()
             return True
         return False
+    except Exception as e:
+        db.rollback()
+        print(f"[ERROR] Ошибка удаления задачи: {e}")
+        return False
     finally:
         db.close()
 
@@ -223,7 +277,12 @@ def get_tasks_due_for_notification() -> list:
             Task.is_active == True,
             Task.next_notification <= datetime.utcnow()
         ).all()
+        for task in tasks:
+            db.expunge(task)
         return tasks
+    except Exception as e:
+        print(f"[ERROR] Ошибка получения задач для уведомлений: {e}")
+        return []
     finally:
         db.close()
 
@@ -238,6 +297,11 @@ def update_task_next_notification(task_id: int) -> Task:
             task.next_notification = datetime.utcnow() + timedelta(minutes=task.interval_minutes)
             db.commit()
             db.refresh(task)
+            db.expunge(task)
         return task
+    except Exception as e:
+        db.rollback()
+        print(f"[ERROR] Ошибка обновления уведомления: {e}")
+        return None
     finally:
         db.close()
