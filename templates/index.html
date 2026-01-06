@@ -519,7 +519,20 @@
             }
 
             const response = await fetch(endpoint, options);
-            return response.json();
+            const result = await response.json();
+            
+            // Проверяем статус HTTP-ответа
+            if (!response.ok) {
+                const errorMessage = result.error || `HTTP ошибка: ${response.status}`;
+                throw new Error(errorMessage);
+            }
+            
+            // Проверяем наличие ошибки в теле ответа
+            if (result.error) {
+                throw new Error(result.error);
+            }
+            
+            return result;
         }
 
         // Переключение табов
@@ -555,12 +568,16 @@
 
         async function loadNotes() {
             try {
+                document.getElementById('notes-loading').style.display = 'block';
+                document.getElementById('notes-container').style.display = 'none';
+                document.getElementById('notes-empty').style.display = 'none';
+                
                 const result = await apiCall('GET', '/api/notes');
                 notes = result.notes || [];
                 renderNotes();
             } catch (error) {
                 console.error('Ошибка загрузки:', error);
-                document.getElementById('notes-loading').textContent = 'Ошибка загрузки';
+                document.getElementById('notes-loading').textContent = 'Ошибка загрузки: ' + (error.message || 'Неизвестная ошибка');
             }
         }
 
@@ -630,18 +647,25 @@
             }
 
             try {
+                let result;
                 if (currentNoteId) {
-                    await apiCall('PUT', `/api/notes/${currentNoteId}`, { title, content });
+                    result = await apiCall('PUT', `/api/notes/${currentNoteId}`, { title, content });
                 } else {
-                    await apiCall('POST', '/api/notes', { title, content });
+                    result = await apiCall('POST', '/api/notes', { title, content });
                 }
 
-                closeNoteModal();
-                await loadNotes();
-                tg.HapticFeedback.notificationOccurred('success');
+                // Проверяем, что заметка успешно сохранена (есть id в ответе)
+                if (result && result.id) {
+                    closeNoteModal();
+                    await loadNotes();
+                    tg.HapticFeedback.notificationOccurred('success');
+                } else {
+                    throw new Error('Не удалось сохранить заметку');
+                }
             } catch (error) {
                 console.error('Ошибка сохранения:', error);
-                tg.showAlert('Ошибка сохранения заметки');
+                tg.HapticFeedback.notificationOccurred('error');
+                tg.showAlert('Ошибка сохранения: ' + (error.message || 'Неизвестная ошибка'));
             }
         }
 
@@ -651,13 +675,18 @@
             tg.showConfirm('Удалить эту заметку?', async (confirmed) => {
                 if (confirmed) {
                     try {
-                        await apiCall('DELETE', `/api/notes/${currentNoteId}`);
-                        closeNoteModal();
-                        await loadNotes();
-                        tg.HapticFeedback.notificationOccurred('success');
+                        const result = await apiCall('DELETE', `/api/notes/${currentNoteId}`);
+                        if (result && result.success) {
+                            closeNoteModal();
+                            await loadNotes();
+                            tg.HapticFeedback.notificationOccurred('success');
+                        } else {
+                            throw new Error('Не удалось удалить заметку');
+                        }
                     } catch (error) {
                         console.error('Ошибка удаления:', error);
-                        tg.showAlert('Ошибка удаления заметки');
+                        tg.HapticFeedback.notificationOccurred('error');
+                        tg.showAlert('Ошибка удаления: ' + (error.message || 'Неизвестная ошибка'));
                     }
                 }
             });
@@ -676,7 +705,7 @@
                 renderTasks();
             } catch (error) {
                 console.error('Ошибка загрузки задач:', error);
-                document.getElementById('tasks-loading').textContent = 'Ошибка загрузки';
+                document.getElementById('tasks-loading').textContent = 'Ошибка загрузки: ' + (error.message || 'Неизвестная ошибка');
             }
         }
 
@@ -793,38 +822,50 @@
             }
 
             try {
+                let result;
                 if (currentTaskId) {
-                    await apiCall('PUT', `/api/tasks/${currentTaskId}`, { 
+                    result = await apiCall('PUT', `/api/tasks/${currentTaskId}`, { 
                         title, 
                         description, 
                         interval_minutes 
                     });
                 } else {
-                    await apiCall('POST', '/api/tasks', { 
+                    result = await apiCall('POST', '/api/tasks', { 
                         title, 
                         description, 
                         interval_minutes 
                     });
                 }
 
-                closeTaskModal();
-                await loadTasks();
-                tg.HapticFeedback.notificationOccurred('success');
+                // Проверяем, что задача успешно сохранена (есть id в ответе)
+                if (result && result.id) {
+                    closeTaskModal();
+                    await loadTasks();
+                    tg.HapticFeedback.notificationOccurred('success');
+                } else {
+                    throw new Error('Не удалось сохранить задачу');
+                }
             } catch (error) {
                 console.error('Ошибка сохранения:', error);
-                tg.showAlert('Ошибка сохранения задачи');
+                tg.HapticFeedback.notificationOccurred('error');
+                tg.showAlert('Ошибка сохранения: ' + (error.message || 'Неизвестная ошибка'));
             }
         }
 
         async function toggleTask(taskId, event) {
             event.stopPropagation();
             try {
-                await apiCall('POST', `/api/tasks/${taskId}/toggle`);
-                await loadTasks();
-                tg.HapticFeedback.impactOccurred('light');
+                const result = await apiCall('POST', `/api/tasks/${taskId}/toggle`);
+                if (result && result.id) {
+                    await loadTasks();
+                    tg.HapticFeedback.impactOccurred('light');
+                } else {
+                    throw new Error('Не удалось переключить статус');
+                }
             } catch (error) {
                 console.error('Ошибка переключения:', error);
-                tg.showAlert('Ошибка переключения статуса');
+                tg.HapticFeedback.notificationOccurred('error');
+                tg.showAlert('Ошибка переключения: ' + (error.message || 'Неизвестная ошибка'));
             }
         }
 
@@ -834,12 +875,17 @@
             tg.showConfirm('Удалить эту задачу и отключить уведомления?', async (confirmed) => {
                 if (confirmed) {
                     try {
-                        await apiCall('DELETE', `/api/tasks/${taskId}`);
-                        await loadTasks();
-                        tg.HapticFeedback.notificationOccurred('success');
+                        const result = await apiCall('DELETE', `/api/tasks/${taskId}`);
+                        if (result && result.success) {
+                            await loadTasks();
+                            tg.HapticFeedback.notificationOccurred('success');
+                        } else {
+                            throw new Error('Не удалось удалить задачу');
+                        }
                     } catch (error) {
                         console.error('Ошибка удаления:', error);
-                        tg.showAlert('Ошибка удаления задачи');
+                        tg.HapticFeedback.notificationOccurred('error');
+                        tg.showAlert('Ошибка удаления: ' + (error.message || 'Неизвестная ошибка'));
                     }
                 }
             });
@@ -851,13 +897,18 @@
             tg.showConfirm('Удалить эту задачу?', async (confirmed) => {
                 if (confirmed) {
                     try {
-                        await apiCall('DELETE', `/api/tasks/${currentTaskId}`);
-                        closeTaskModal();
-                        await loadTasks();
-                        tg.HapticFeedback.notificationOccurred('success');
+                        const result = await apiCall('DELETE', `/api/tasks/${currentTaskId}`);
+                        if (result && result.success) {
+                            closeTaskModal();
+                            await loadTasks();
+                            tg.HapticFeedback.notificationOccurred('success');
+                        } else {
+                            throw new Error('Не удалось удалить задачу');
+                        }
                     } catch (error) {
                         console.error('Ошибка удаления:', error);
-                        tg.showAlert('Ошибка удаления задачи');
+                        tg.HapticFeedback.notificationOccurred('error');
+                        tg.showAlert('Ошибка удаления: ' + (error.message || 'Неизвестная ошибка'));
                     }
                 }
             });
