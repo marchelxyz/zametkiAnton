@@ -683,6 +683,7 @@
         async function loadNotes() {
             try {
                 document.getElementById('notes-loading').style.display = 'block';
+                document.getElementById('notes-loading').innerHTML = 'Загрузка...';
                 document.getElementById('notes-container').style.display = 'none';
                 document.getElementById('notes-empty').style.display = 'none';
                 
@@ -699,17 +700,33 @@
                     loadingEl.innerHTML = `
                         <div style="text-align: center; padding: 20px;">
                             <div style="font-size: 32px; margin-bottom: 12px;">🔐</div>
-                            <div style="font-size: 14px; color: var(--tg-theme-hint-color);">
+                            <div style="font-size: 14px; color: var(--tg-theme-hint-color); margin-bottom: 16px;">
                                 Ошибка авторизации.<br>
                                 Пожалуйста, закройте и заново<br>
                                 откройте приложение через Telegram.
                             </div>
+                            <button class="btn btn-primary" onclick="retryInit()">🔄 Повторить</button>
                         </div>
                     `;
                 } else {
-                    loadingEl.textContent = 'Ошибка загрузки: ' + (error.message || 'Неизвестная ошибка');
+                    loadingEl.innerHTML = `
+                        <div style="text-align: center; padding: 20px;">
+                            <div style="font-size: 32px; margin-bottom: 12px;">⚠️</div>
+                            <div style="font-size: 14px; color: var(--tg-theme-hint-color); margin-bottom: 16px;">
+                                ${escapeHtml(error.message || 'Неизвестная ошибка')}
+                            </div>
+                            <button class="btn btn-primary" onclick="loadNotes()">🔄 Повторить</button>
+                        </div>
+                    `;
                 }
             }
+        }
+        
+        // Функция для повторной инициализации
+        function retryInit() {
+            initAttempts = 0;
+            document.getElementById('notes-loading').innerHTML = 'Загрузка...';
+            initApp();
         }
 
         function renderNotes() {
@@ -828,6 +845,7 @@
         async function loadTasks() {
             try {
                 document.getElementById('tasks-loading').style.display = 'block';
+                document.getElementById('tasks-loading').innerHTML = 'Загрузка...';
                 document.getElementById('tasks-container').style.display = 'none';
                 document.getElementById('tasks-empty').style.display = 'none';
                 
@@ -844,15 +862,24 @@
                     loadingEl.innerHTML = `
                         <div style="text-align: center; padding: 20px;">
                             <div style="font-size: 32px; margin-bottom: 12px;">🔐</div>
-                            <div style="font-size: 14px; color: var(--tg-theme-hint-color);">
+                            <div style="font-size: 14px; color: var(--tg-theme-hint-color); margin-bottom: 16px;">
                                 Ошибка авторизации.<br>
                                 Пожалуйста, закройте и заново<br>
                                 откройте приложение через Telegram.
                             </div>
+                            <button class="btn btn-primary" onclick="retryInit()">🔄 Повторить</button>
                         </div>
                     `;
                 } else {
-                    loadingEl.textContent = 'Ошибка загрузки: ' + (error.message || 'Неизвестная ошибка');
+                    loadingEl.innerHTML = `
+                        <div style="text-align: center; padding: 20px;">
+                            <div style="font-size: 32px; margin-bottom: 12px;">⚠️</div>
+                            <div style="font-size: 14px; color: var(--tg-theme-hint-color); margin-bottom: 16px;">
+                                ${escapeHtml(error.message || 'Неизвестная ошибка')}
+                            </div>
+                            <button class="btn btn-primary" onclick="loadTasks()">🔄 Повторить</button>
+                        </div>
+                    `;
                 }
             }
         }
@@ -1103,8 +1130,8 @@
 
         // Инициализация приложения с несколькими попытками
         let initAttempts = 0;
-        const MAX_INIT_ATTEMPTS = 3;
-        const INIT_DELAY_MS = 200;
+        const MAX_INIT_ATTEMPTS = 5;  // Увеличено для надёжности
+        const INIT_DELAY_MS = 300;    // Увеличена задержка
         
         function initApp() {
             initAttempts++;
@@ -1126,13 +1153,35 @@
                 return;
             }
             
-            // Исчерпаны все попытки
-            console.error('[INIT] Не удалось получить initData после всех попыток');
+            // Исчерпаны все попытки - но всё равно пробуем загрузить данные
+            // (на случай если сервер работает в DEBUG режиме)
+            console.warn('[INIT] initData не доступна, пробуем загрузить данные...');
+            tryLoadWithoutVerification();
+        }
+        
+        // Попытка загрузки данных даже без initData (для режима отладки на сервере)
+        async function tryLoadWithoutVerification() {
+            try {
+                console.log('[INIT] Пробуем загрузить заметки без верифицированной initData...');
+                const result = await apiCall('GET', '/api/notes');
+                
+                // Если запрос успешен - сервер в режиме отладки, работаем
+                if (result && result.notes !== undefined) {
+                    console.log('[INIT] Сервер вернул данные (вероятно DEBUG режим)');
+                    notes = result.notes || [];
+                    renderNotes();
+                    return;
+                }
+            } catch (error) {
+                console.error('[INIT] Ошибка при попытке загрузки:', error.message);
+            }
+            
+            // Если ничего не помогло - показываем предупреждение
             showNotInTelegramWarning();
         }
 
         // Запускаем инициализацию с небольшой задержкой для загрузки Telegram SDK
-        setTimeout(initApp, 100);
+        setTimeout(initApp, 150);
     </script>
 </body>
 </html>

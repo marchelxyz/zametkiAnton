@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import requests
 import atexit
+from urllib.parse import unquote, parse_qs
 from flask import Flask, request, jsonify, render_template
 from dotenv import load_dotenv
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -78,6 +79,9 @@ def verify_telegram_data(init_data: str) -> dict:
     """
     Проверка данных от Telegram Mini App.
     Возвращает данные пользователя если валидация успешна.
+    
+    ВАЖНО: init_data от Telegram приходит в URL-encoded формате,
+    поэтому значения нужно декодировать перед проверкой подписи.
     """
     # Режим отладки для тестирования вне Telegram
     debug_mode = os.getenv("DEBUG", "false").lower() == "true"
@@ -102,28 +106,68 @@ def verify_telegram_data(init_data: str) -> dict:
         return None
     
     try:
-        # Парсим init_data
-        parsed_data = dict(x.split('=', 1) for x in init_data.split('&') if '=' in x)
+        # Парсим init_data с URL-декодированием значений
+        # КРИТИЧНО: Telegram отправляет данные в URL-encoded формате
+        parsed_data = {}
+        for pair in init_data.split('&'):
+            if '=' in pair:
+                key, value = pair.split('=', 1)
+                # URL-декодируем значение
+                parsed_data[key] = unquote(value)
         
-        # Получаем hash и удаляем его из данных
+        # Получаем hash и удаляем его из данных для проверки
         received_hash = parsed_data.pop('hash', '')
         
-        # Сортируем и создаём строку для проверки
+        if not received_hash:
+            print("Ошибка верификации: hash отсутствует в init_data")
+            if debug_mode:
+                return {"id": 123456789, "first_name": "Debug", "username": "debuguser"}
+            return None
+        
+        # Сортируем по ключу и создаём строку для проверки подписи
+        # Формат: key=value\nkey=value\n...
         data_check_string = '\n'.join(f"{k}={v}" for k, v in sorted(parsed_data.items()))
         
-        # Создаём секретный ключ
+        # Создаём секретный ключ согласно документации Telegram:
+        # HMAC-SHA256(bot_token, "WebAppData")
         secret_key = hmac.new(b"WebAppData", BOT_TOKEN.encode(), hashlib.sha256).digest()
         
-        # Вычисляем hash
+        # Вычисляем hash для проверки
         calculated_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
         
-        # Проверяем hash
-        if calculated_hash == received_hash:
-            user_data = json.loads(parsed_data.get('user', '{}'))
+        # Сравниваем hash
+        if hmac.compare_digest(calculated_hash, received_hash):
+            # Подпись верна, извлекаем данные пользователя
+            user_json = parsed_data.get('user', '{}')
+            user_data = json.loads(user_json)
+            print(f"[OK] Верификация успешна для пользователя: {user_data.get('id')}")
             return user_data
+        else:
+            print(f"Ошибка верификации: hash не совпадает")
+            print(f"  - Получен: {received_hash[:20]}...")
+            print(f"  - Вычислен: {calculated_hash[:20]}...")
+            if debug_mode:
+                # В режиме отладки всё равно возвращаем данные пользователя
+                user_json = parsed_data.get('user', '{}')
+                try:
+                    user_data = json.loads(user_json)
+                    print(f"[DEBUG] Возвращаем данные пользователя несмотря на ошибку hash")
+                    return user_data
+                except:
+                    return {"id": 123456789, "first_name": "Debug", "username": "debuguser"}
+            return None
+            
+    except json.JSONDecodeError as e:
+        print(f"Ошибка верификации: некорректный JSON в user data: {e}")
+        if debug_mode:
+            return {"id": 123456789, "first_name": "Debug", "username": "debuguser"}
         return None
     except Exception as e:
         print(f"Ошибка верификации: {e}")
+        import traceback
+        traceback.print_exc()
+        if debug_mode:
+            return {"id": 123456789, "first_name": "Debug", "username": "debuguser"}
         return None
 
 
@@ -270,13 +314,16 @@ def debug_auth():
         "init_data_present": bool(init_data),
         "init_data_length": len(init_data) if init_data else 0,
         "init_data_has_equals": '=' in init_data if init_data else False,
+        "init_data_has_hash": 'hash=' in init_data if init_data else False,
+        "init_data_has_user": 'user=' in init_data if init_data else False,
         "bot_token_configured": bool(BOT_TOKEN),
+        "bot_token_length": len(BOT_TOKEN) if BOT_TOKEN else 0,
         "debug_mode": os.getenv("DEBUG", "false").lower() == "true"
     }
     
     # Не показываем содержимое init_data в продакшене
     if os.getenv("DEBUG", "false").lower() == "true":
-        debug_info["init_data_preview"] = init_data[:100] if init_data else None
+        debug_info["init_data_preview"] = init_data[:200] if init_data else None
     
     # Пробуем верифицировать
     user = verify_telegram_data(init_data)
@@ -285,6 +332,7 @@ def debug_auth():
     if user:
         debug_info["user_id"] = user.get('id')
         debug_info["user_name"] = user.get('first_name')
+        debug_info["user_username"] = user.get('username')
     
     return jsonify(debug_info)
 

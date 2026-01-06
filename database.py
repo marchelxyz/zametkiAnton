@@ -5,14 +5,26 @@ from sqlalchemy.orm import sessionmaker
 from datetime import datetime
 
 # Получаем DATABASE_URL из переменных окружения Railway
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://localhost:5432/notes_db")
+# Если не задана - используем SQLite для локальной разработки
+DATABASE_URL = os.getenv("DATABASE_URL", "")
 
-# Railway использует postgres:// но SQLAlchemy требует postgresql://
-if DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+if DATABASE_URL:
+    # Railway использует postgres:// но SQLAlchemy требует postgresql://
+    if DATABASE_URL.startswith("postgres://"):
+        DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+    print(f"[DB] Используем PostgreSQL")
+else:
+    # Локальная разработка - SQLite
+    DATABASE_URL = "sqlite:///./notes_app.db"
+    print(f"[DB] DATABASE_URL не задана, используем SQLite: {DATABASE_URL}")
 
 # Создаём движок базы данных
-engine = create_engine(DATABASE_URL)
+# check_same_thread=False нужен для SQLite при многопоточном доступе
+connect_args = {}
+if DATABASE_URL.startswith("sqlite"):
+    connect_args["check_same_thread"] = False
+
+engine = create_engine(DATABASE_URL, connect_args=connect_args)
 
 # Создаём базовый класс для моделей
 Base = declarative_base()
