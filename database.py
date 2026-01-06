@@ -18,7 +18,8 @@ engine = create_engine(DATABASE_URL)
 Base = declarative_base()
 
 # Создаём сессию
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+# expire_on_commit=False важен для того, чтобы объекты оставались доступными после закрытия сессии
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine, expire_on_commit=False)
 
 
 class Note(Base):
@@ -72,6 +73,7 @@ def create_note(user_id: int, title: str, content: str = "") -> Note:
         db.add(note)
         db.commit()
         db.refresh(note)
+        db.expunge(note)  # Отвязываем объект от сессии
         return note
     finally:
         db.close()
@@ -82,6 +84,8 @@ def get_notes_by_user(user_id: int) -> list:
     db = SessionLocal()
     try:
         notes = db.query(Note).filter(Note.user_id == user_id).order_by(Note.created_at.desc()).all()
+        for note in notes:
+            db.expunge(note)  # Отвязываем объекты от сессии
         return notes
     finally:
         db.close()
@@ -92,6 +96,8 @@ def get_note_by_id(note_id: int, user_id: int) -> Note:
     db = SessionLocal()
     try:
         note = db.query(Note).filter(Note.id == note_id, Note.user_id == user_id).first()
+        if note:
+            db.expunge(note)  # Отвязываем объект от сессии
         return note
     finally:
         db.close()
@@ -110,6 +116,7 @@ def update_note(note_id: int, user_id: int, title: str = None, content: str = No
             note.updated_at = datetime.utcnow()
             db.commit()
             db.refresh(note)
+            db.expunge(note)  # Отвязываем объект от сессии
         return note
     finally:
         db.close()
@@ -147,6 +154,7 @@ def create_task(user_id: int, title: str, description: str = "", interval_minute
         db.add(task)
         db.commit()
         db.refresh(task)
+        db.expunge(task)  # Отвязываем объект от сессии
         return task
     finally:
         db.close()
@@ -160,6 +168,8 @@ def get_tasks_by_user(user_id: int, active_only: bool = True) -> list:
         if active_only:
             query = query.filter(Task.is_active == True)
         tasks = query.order_by(Task.created_at.desc()).all()
+        for task in tasks:
+            db.expunge(task)  # Отвязываем объекты от сессии
         return tasks
     finally:
         db.close()
@@ -170,6 +180,8 @@ def get_task_by_id(task_id: int, user_id: int) -> Task:
     db = SessionLocal()
     try:
         task = db.query(Task).filter(Task.id == task_id, Task.user_id == user_id).first()
+        if task:
+            db.expunge(task)  # Отвязываем объект от сессии
         return task
     finally:
         db.close()
@@ -196,6 +208,7 @@ def update_task(task_id: int, user_id: int, title: str = None, description: str 
             task.updated_at = datetime.utcnow()
             db.commit()
             db.refresh(task)
+            db.expunge(task)  # Отвязываем объект от сессии
         return task
     finally:
         db.close()
@@ -223,6 +236,8 @@ def get_tasks_due_for_notification() -> list:
             Task.is_active == True,
             Task.next_notification <= datetime.utcnow()
         ).all()
+        for task in tasks:
+            db.expunge(task)  # Отвязываем объекты от сессии
         return tasks
     finally:
         db.close()
@@ -238,6 +253,7 @@ def update_task_next_notification(task_id: int) -> Task:
             task.next_notification = datetime.utcnow() + timedelta(minutes=task.interval_minutes)
             db.commit()
             db.refresh(task)
+            db.expunge(task)  # Отвязываем объект от сессии
         return task
     finally:
         db.close()
