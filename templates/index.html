@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Мои Заметки</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        :root {
+            --tg-theme-bg-color: #ffffff;
+            --tg-theme-text-color: #000000;
+            --tg-theme-hint-color: #999999;
+            --tg-theme-link-color: #2481cc;
+            --tg-theme-button-color: #2481cc;
+            --tg-theme-button-text-color: #ffffff;
+            --tg-theme-secondary-bg-color: #f0f0f0;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background-color: var(--tg-theme-bg-color);
+            color: var(--tg-theme-text-color);
+            min-height: 100vh;
+            padding: 16px;
+            padding-bottom: 100px;
+        }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        h1 {
+            font-size: 24px;
+            font-weight: 600;
+        }
+
+        .add-btn {
+            width: 44px;
+            height: 44px;
+            border-radius: 50%;
+            background-color: var(--tg-theme-button-color);
+            color: var(--tg-theme-button-text-color);
+            border: none;
+            font-size: 24px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+            transition: transform 0.2s;
+        }
+
+        .add-btn:active {
+            transform: scale(0.95);
+        }
+
+        .notes-list {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .note-card {
+            background-color: var(--tg-theme-secondary-bg-color);
+            border-radius: 12px;
+            padding: 16px;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .note-card:active {
+            transform: scale(0.98);
+        }
+
+        .note-title {
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 6px;
+            word-wrap: break-word;
+        }
+
+        .note-content {
+            font-size: 14px;
+            color: var(--tg-theme-hint-color);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            word-wrap: break-word;
+        }
+
+        .note-date {
+            font-size: 12px;
+            color: var(--tg-theme-hint-color);
+            margin-top: 8px;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: var(--tg-theme-hint-color);
+        }
+
+        .empty-state-icon {
+            font-size: 48px;
+            margin-bottom: 16px;
+        }
+
+        .empty-state-text {
+            font-size: 16px;
+        }
+
+        /* Модальное окно */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: var(--tg-theme-bg-color);
+            z-index: 1000;
+            padding: 16px;
+            overflow-y: auto;
+        }
+
+        .modal.active {
+            display: block;
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .modal-title {
+            font-size: 20px;
+            font-weight: 600;
+        }
+
+        .modal-actions {
+            display: flex;
+            gap: 12px;
+        }
+
+        .btn {
+            padding: 8px 16px;
+            border-radius: 8px;
+            border: none;
+            font-size: 14px;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+
+        .btn:active {
+            opacity: 0.7;
+        }
+
+        .btn-primary {
+            background-color: var(--tg-theme-button-color);
+            color: var(--tg-theme-button-text-color);
+        }
+
+        .btn-secondary {
+            background-color: var(--tg-theme-secondary-bg-color);
+            color: var(--tg-theme-text-color);
+        }
+
+        .btn-danger {
+            background-color: #ff3b30;
+            color: white;
+        }
+
+        .form-group {
+            margin-bottom: 16px;
+        }
+
+        .form-label {
+            display: block;
+            font-size: 14px;
+            font-weight: 500;
+            margin-bottom: 8px;
+            color: var(--tg-theme-hint-color);
+        }
+
+        .form-input {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid var(--tg-theme-secondary-bg-color);
+            border-radius: 8px;
+            font-size: 16px;
+            background-color: var(--tg-theme-secondary-bg-color);
+            color: var(--tg-theme-text-color);
+        }
+
+        .form-input:focus {
+            outline: none;
+            border-color: var(--tg-theme-button-color);
+        }
+
+        .form-textarea {
+            min-height: 200px;
+            resize: vertical;
+            font-family: inherit;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: var(--tg-theme-hint-color);
+        }
+
+        .delete-zone {
+            margin-top: 20px;
+            padding-top: 20px;
+            border-top: 1px solid var(--tg-theme-secondary-bg-color);
+        }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <div class="header">
+            <h1>📝 Заметки</h1>
+            <button class="add-btn" onclick="openNewNote()">+</button>
+        </div>
+
+        <div id="loading" class="loading">Загрузка...</div>
+
+        <div id="notes-container" class="notes-list" style="display: none;"></div>
+
+        <div id="empty-state" class="empty-state" style="display: none;">
+            <div class="empty-state-icon">📋</div>
+            <div class="empty-state-text">У вас пока нет заметок.<br>Нажмите + чтобы создать первую!</div>
+        </div>
+    </div>
+
+    <!-- Модальное окно для создания/редактирования -->
+    <div id="note-modal" class="modal">
+        <div class="modal-header">
+            <span class="modal-title" id="modal-title">Новая заметка</span>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" onclick="closeModal()">Отмена</button>
+                <button class="btn btn-primary" onclick="saveNote()">Сохранить</button>
+            </div>
+        </div>
+
+        <div class="form-group">
+            <label class="form-label">Заголовок</label>
+            <input type="text" id="note-title-input" class="form-input" placeholder="Введите заголовок...">
+        </div>
+
+        <div class="form-group">
+            <label class="form-label">Содержимое</label>
+            <textarea id="note-content-input" class="form-input form-textarea" placeholder="Введите текст заметки..."></textarea>
+        </div>
+
+        <div id="delete-zone" class="delete-zone" style="display: none;">
+            <button class="btn btn-danger" onclick="deleteCurrentNote()">🗑 Удалить заметку</button>
+        </div>
+    </div>
+
+    <script>
+        // Инициализация Telegram Web App
+        const tg = window.Telegram.WebApp;
+        tg.ready();
+        tg.expand();
+
+        // Применяем тему Telegram
+        if (tg.themeParams) {
+            document.documentElement.style.setProperty('--tg-theme-bg-color', tg.themeParams.bg_color || '#ffffff');
+            document.documentElement.style.setProperty('--tg-theme-text-color', tg.themeParams.text_color || '#000000');
+            document.documentElement.style.setProperty('--tg-theme-hint-color', tg.themeParams.hint_color || '#999999');
+            document.documentElement.style.setProperty('--tg-theme-link-color', tg.themeParams.link_color || '#2481cc');
+            document.documentElement.style.setProperty('--tg-theme-button-color', tg.themeParams.button_color || '#2481cc');
+            document.documentElement.style.setProperty('--tg-theme-button-text-color', tg.themeParams.button_text_color || '#ffffff');
+            document.documentElement.style.setProperty('--tg-theme-secondary-bg-color', tg.themeParams.secondary_bg_color || '#f0f0f0');
+        }
+
+        let notes = [];
+        let currentNoteId = null;
+
+        // Получаем initData для авторизации
+        function getInitData() {
+            return tg.initData || '';
+        }
+
+        // API вызовы
+        async function apiCall(method, endpoint, data = null) {
+            const options = {
+                method: method,
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Telegram-Init-Data': getInitData()
+                }
+            };
+
+            if (data) {
+                options.body = JSON.stringify(data);
+            }
+
+            const response = await fetch(endpoint, options);
+            return response.json();
+        }
+
+        // Загрузка заметок
+        async function loadNotes() {
+            try {
+                const result = await apiCall('GET', '/api/notes');
+                notes = result.notes || [];
+                renderNotes();
+            } catch (error) {
+                console.error('Ошибка загрузки:', error);
+                document.getElementById('loading').textContent = 'Ошибка загрузки';
+            }
+        }
+
+        // Отрисовка заметок
+        function renderNotes() {
+            const container = document.getElementById('notes-container');
+            const emptyState = document.getElementById('empty-state');
+            const loading = document.getElementById('loading');
+
+            loading.style.display = 'none';
+
+            if (notes.length === 0) {
+                container.style.display = 'none';
+                emptyState.style.display = 'block';
+                return;
+            }
+
+            emptyState.style.display = 'none';
+            container.style.display = 'flex';
+
+            container.innerHTML = notes.map(note => `
+                <div class="note-card" onclick="openNote(${note.id})">
+                    <div class="note-title">${escapeHtml(note.title)}</div>
+                    <div class="note-content">${escapeHtml(note.content || 'Нет содержимого')}</div>
+                    <div class="note-date">${formatDate(note.updated_at || note.created_at)}</div>
+                </div>
+            `).join('');
+        }
+
+        // Escape HTML для безопасности
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Форматирование даты
+        function formatDate(dateString) {
+            if (!dateString) return '';
+            const date = new Date(dateString);
+            return date.toLocaleDateString('ru-RU', {
+                day: 'numeric',
+                month: 'short',
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+        }
+
+        // Открыть модальное окно для новой заметки
+        function openNewNote() {
+            currentNoteId = null;
+            document.getElementById('modal-title').textContent = 'Новая заметка';
+            document.getElementById('note-title-input').value = '';
+            document.getElementById('note-content-input').value = '';
+            document.getElementById('delete-zone').style.display = 'none';
+            document.getElementById('note-modal').classList.add('active');
+            tg.BackButton.show();
+            tg.BackButton.onClick(closeModal);
+        }
+
+        // Открыть существующую заметку
+        function openNote(noteId) {
+            const note = notes.find(n => n.id === noteId);
+            if (!note) return;
+
+            currentNoteId = noteId;
+            document.getElementById('modal-title').textContent = 'Редактирование';
+            document.getElementById('note-title-input').value = note.title;
+            document.getElementById('note-content-input').value = note.content || '';
+            document.getElementById('delete-zone').style.display = 'block';
+            document.getElementById('note-modal').classList.add('active');
+            tg.BackButton.show();
+            tg.BackButton.onClick(closeModal);
+        }
+
+        // Закрыть модальное окно
+        function closeModal() {
+            document.getElementById('note-modal').classList.remove('active');
+            tg.BackButton.hide();
+            tg.BackButton.offClick(closeModal);
+        }
+
+        // Сохранить заметку
+        async function saveNote() {
+            const title = document.getElementById('note-title-input').value.trim();
+            const content = document.getElementById('note-content-input').value.trim();
+
+            if (!title) {
+                tg.showAlert('Введите заголовок заметки');
+                return;
+            }
+
+            try {
+                if (currentNoteId) {
+                    // Обновление существующей заметки
+                    await apiCall('PUT', `/api/notes/${currentNoteId}`, { title, content });
+                } else {
+                    // Создание новой заметки
+                    await apiCall('POST', '/api/notes', { title, content });
+                }
+
+                closeModal();
+                await loadNotes();
+                tg.HapticFeedback.notificationOccurred('success');
+            } catch (error) {
+                console.error('Ошибка сохранения:', error);
+                tg.showAlert('Ошибка сохранения заметки');
+            }
+        }
+
+        // Удалить заметку
+        async function deleteCurrentNote() {
+            if (!currentNoteId) return;
+
+            tg.showConfirm('Удалить эту заметку?', async (confirmed) => {
+                if (confirmed) {
+                    try {
+                        await apiCall('DELETE', `/api/notes/${currentNoteId}`);
+                        closeModal();
+                        await loadNotes();
+                        tg.HapticFeedback.notificationOccurred('success');
+                    } catch (error) {
+                        console.error('Ошибка удаления:', error);
+                        tg.showAlert('Ошибка удаления заметки');
+                    }
+                }
+            });
+        }
+
+        // Загружаем заметки при старте
+        loadNotes();
+    </script>
+</body>
+</html>
