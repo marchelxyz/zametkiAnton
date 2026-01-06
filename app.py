@@ -2,16 +2,20 @@ import os
 import json
 import hashlib
 import hmac
+import uuid
 import requests
 import atexit
 from urllib.parse import unquote, parse_qs
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template, send_from_directory
+from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
 from apscheduler.schedulers.background import BackgroundScheduler
 from database import (
     init_db, create_note, get_notes_by_user, get_note_by_id, update_note, delete_note,
     create_task, get_tasks_by_user, get_task_by_id, update_task, delete_task,
-    get_tasks_due_for_notification, update_task_next_notification
+    get_tasks_due_for_notification, update_task_next_notification,
+    create_attachment, get_attachments_by_note, get_attachment_by_id, delete_attachment,
+    get_note_with_attachments
 )
 
 # Загружаем переменные окружения
@@ -22,8 +26,46 @@ app = Flask(__name__)
 # Получаем токен бота из переменных окружения
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 
+# Конфигурация загрузки файлов
+UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'uploads')
+MAX_CONTENT_LENGTH = 16 * 1024 * 1024  # 16 MB максимум
+ALLOWED_EXTENSIONS = {
+    'image': {'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'},
+    'document': {'pdf', 'doc', 'docx', 'xls', 'xlsx', 'txt', 'zip', 'rar'}
+}
+
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
+
+# Создаём папку для загрузок если её нет
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
 # Планировщик для периодических задач
 scheduler = BackgroundScheduler()
+
+
+def get_file_type(filename: str) -> str:
+    """Определить тип файла по расширению"""
+    ext = filename.rsplit('.', 1)[1].lower() if '.' in filename else ''
+    if ext in ALLOWED_EXTENSIONS['image']:
+        return 'image'
+    elif ext in ALLOWED_EXTENSIONS['document']:
+        return 'document'
+    return None
+
+
+def allowed_file(filename: str) -> bool:
+    """Проверить допустимость файла"""
+    return get_file_type(filename) is not None
+
+
+def generate_stored_filename(original_filename: str) -> str:
+    """Сгенерировать уникальное имя файла для хранения"""
+    ext = original_filename.rsplit('.', 1)[1].lower() if '.' in original_filename else ''
+    unique_name = f"{uuid.uuid4().hex}"
+    if ext:
+        unique_name = f"{unique_name}.{ext}"
+    return unique_name
 
 
 def send_telegram_message(chat_id: int, text: str) -> bool:
@@ -189,18 +231,27 @@ def api_get_notes():
     user_id = user.get('id')
     notes = get_notes_by_user(user_id)
     
-    return jsonify({
-        "notes": [
-            {
-                "id": note.id,
-                "title": note.title,
-                "content": note.content,
-                "created_at": note.created_at.isoformat() if note.created_at else None,
-                "updated_at": note.updated_at.isoformat() if note.updated_at else None
-            }
-            for note in notes
-        ]
-    })
+    result = []
+    for note in notes:
+        attachments = get_attachments_by_note(note.id)
+        result.append({
+            "id": note.id,
+            "title": note.title,
+            "content": note.content,
+            "created_at": note.created_at.isoformat() if note.created_at else None,
+            "updated_at": note.updated_at.isoformat() if note.updated_at else None,
+            "attachments": [
+                {
+                    "id": att.id,
+                    "filename": att.filename,
+                    "file_type": att.file_type,
+                    "file_size": att.file_size
+                }
+                for att in attachments
+            ]
+        })
+    
+    return jsonify({"notes": result})
 
 
 @app.route('/api/notes', methods=['POST'])
@@ -240,7 +291,7 @@ def api_get_note(note_id):
         return jsonify({"error": "Unauthorized"}), 401
     
     user_id = user.get('id')
-    note = get_note_by_id(note_id, user_id)
+    note, attachments = get_note_with_attachments(note_id, user_id)
     
     if not note:
         return jsonify({"error": "Note not found"}), 404
@@ -250,7 +301,16 @@ def api_get_note(note_id):
         "title": note.title,
         "content": note.content,
         "created_at": note.created_at.isoformat() if note.created_at else None,
-        "updated_at": note.updated_at.isoformat() if note.updated_at else None
+        "updated_at": note.updated_at.isoformat() if note.updated_at else None,
+        "attachments": [
+            {
+                "id": att.id,
+                "filename": att.filename,
+                "file_type": att.file_type,
+                "file_size": att.file_size
+            }
+            for att in attachments
+        ]
     })
 
 
@@ -291,10 +351,150 @@ def api_delete_note(note_id):
         return jsonify({"error": "Unauthorized"}), 401
     
     user_id = user.get('id')
+    
+    # Удаляем файлы вложений перед удалением заметки
+    attachments = get_attachments_by_note(note_id)
+    for att in attachments:
+        try:
+            file_path = os.path.join(app.config['UPLOAD_FOLDER'], att.stored_filename)
+            if os.path.exists(file_path):
+                os.remove(file_path)
+        except Exception as e:
+            print(f"[ERROR] Ошибка удаления файла {att.stored_filename}: {e}")
+    
     success = delete_note(note_id, user_id)
     
     if not success:
         return jsonify({"error": "Note not found"}), 404
+    
+    return jsonify({"success": True})
+
+
+# ==================== API для вложений ====================
+
+@app.route('/api/notes/<int:note_id>/attachments', methods=['POST'])
+def api_upload_attachment(note_id):
+    """Загрузить вложение к заметке"""
+    init_data = request.headers.get('X-Telegram-Init-Data', '')
+    user = verify_telegram_data(init_data)
+    
+    if not user:
+        return jsonify({"error": "Unauthorized"}), 401
+    
+    user_id = user.get('id')
+    
+    # Проверяем, что заметка существует и принадлежит пользователю
+    note = get_note_by_id(note_id, user_id)
+    if not note:
+        return jsonify({"error": "Note not found"}), 404
+    
+    # Проверяем наличие файла
+    if 'file' not in request.files:
+        return jsonify({"error": "No file provided"}), 400
+    
+    file = request.files['file']
+    
+    if file.filename == '':
+        return jsonify({"error": "No file selected"}), 400
+    
+    if not allowed_file(file.filename):
+        return jsonify({"error": "File type not allowed"}), 400
+    
+    # Генерируем безопасное имя файла
+    original_filename = secure_filename(file.filename)
+    stored_filename = generate_stored_filename(original_filename)
+    file_type = get_file_type(original_filename)
+    
+    # Сохраняем файл
+    file_path = os.path.join(app.config['UPLOAD_FOLDER'], stored_filename)
+    file.save(file_path)
+    
+    # Получаем размер файла
+    file_size = os.path.getsize(file_path)
+    
+    # Определяем MIME тип
+    mime_type = file.content_type
+    
+    # Создаём запись в БД
+    attachment = create_attachment(
+        note_id=note_id,
+        filename=original_filename,
+        stored_filename=stored_filename,
+        file_type=file_type,
+        mime_type=mime_type,
+        file_size=file_size
+    )
+    
+    return jsonify({
+        "id": attachment.id,
+        "filename": attachment.filename,
+        "file_type": attachment.file_type,
+        "file_size": attachment.file_size,
+        "created_at": attachment.created_at.isoformat() if attachment.created_at else None
+    }), 201
+
+
+@app.route('/api/attachments/<int:attachment_id>', methods=['GET'])
+def api_get_attachment(attachment_id):
+    """Скачать вложение"""
+    init_data = request.headers.get('X-Telegram-Init-Data', '')
+    user = verify_telegram_data(init_data)
+    
+    if not user:
+        return jsonify({"error": "Unauthorized"}), 401
+    
+    user_id = user.get('id')
+    
+    # Получаем вложение
+    attachment = get_attachment_by_id(attachment_id)
+    if not attachment:
+        return jsonify({"error": "Attachment not found"}), 404
+    
+    # Проверяем, что заметка принадлежит пользователю
+    note = get_note_by_id(attachment.note_id, user_id)
+    if not note:
+        return jsonify({"error": "Attachment not found"}), 404
+    
+    # Отправляем файл
+    return send_from_directory(
+        app.config['UPLOAD_FOLDER'],
+        attachment.stored_filename,
+        download_name=attachment.filename,
+        as_attachment=False
+    )
+
+
+@app.route('/api/attachments/<int:attachment_id>', methods=['DELETE'])
+def api_delete_attachment(attachment_id):
+    """Удалить вложение"""
+    init_data = request.headers.get('X-Telegram-Init-Data', '')
+    user = verify_telegram_data(init_data)
+    
+    if not user:
+        return jsonify({"error": "Unauthorized"}), 401
+    
+    user_id = user.get('id')
+    
+    # Получаем вложение
+    attachment = get_attachment_by_id(attachment_id)
+    if not attachment:
+        return jsonify({"error": "Attachment not found"}), 404
+    
+    # Проверяем, что заметка принадлежит пользователю
+    note = get_note_by_id(attachment.note_id, user_id)
+    if not note:
+        return jsonify({"error": "Attachment not found"}), 404
+    
+    # Удаляем файл
+    try:
+        file_path = os.path.join(app.config['UPLOAD_FOLDER'], attachment.stored_filename)
+        if os.path.exists(file_path):
+            os.remove(file_path)
+    except Exception as e:
+        print(f"[ERROR] Ошибка удаления файла: {e}")
+    
+    # Удаляем запись из БД
+    delete_attachment(attachment_id)
     
     return jsonify({"success": True})
 

@@ -1,8 +1,16 @@
 import os
-from sqlalchemy import create_engine, Column, Integer, BigInteger, String, Text, DateTime, Boolean
+from sqlalchemy import create_engine, Column, Integer, BigInteger, String, Text, DateTime, Boolean, ForeignKey
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
-from datetime import datetime
+from sqlalchemy.orm import sessionmaker, relationship
+from datetime import datetime, timezone, timedelta
+
+# Московский часовой пояс (UTC+3)
+MOSCOW_TZ = timezone(timedelta(hours=3))
+
+
+def moscow_now():
+    """Получить текущее время в московском часовом поясе"""
+    return datetime.now(MOSCOW_TZ).replace(tzinfo=None)
 
 # Получаем DATABASE_URL из переменных окружения Railway
 # Если не задана - используем SQLite для локальной разработки
@@ -42,8 +50,28 @@ class Note(Base):
     user_id = Column(BigInteger, index=True, nullable=False)  # Telegram user ID
     title = Column(String(255), nullable=False)
     content = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=moscow_now)
+    updated_at = Column(DateTime, default=moscow_now, onupdate=moscow_now)
+    
+    # Связь с вложениями
+    attachments = relationship("Attachment", back_populates="note", cascade="all, delete-orphan")
+
+
+class Attachment(Base):
+    """Модель вложения (фото/файл)"""
+    __tablename__ = "attachments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    note_id = Column(Integer, ForeignKey("notes.id", ondelete="CASCADE"), nullable=False, index=True)
+    filename = Column(String(255), nullable=False)  # Оригинальное имя файла
+    stored_filename = Column(String(255), nullable=False)  # Имя файла в хранилище
+    file_type = Column(String(50), nullable=False)  # Тип файла (image/document)
+    mime_type = Column(String(100), nullable=True)  # MIME тип
+    file_size = Column(Integer, nullable=True)  # Размер в байтах
+    created_at = Column(DateTime, default=moscow_now)
+    
+    # Связь с заметкой
+    note = relationship("Note", back_populates="attachments")
 
 
 class Task(Base):
@@ -57,8 +85,8 @@ class Task(Base):
     interval_minutes = Column(Integer, nullable=False, default=60)  # Интервал в минутах
     is_active = Column(Boolean, default=True)  # Активна ли задача
     next_notification = Column(DateTime, nullable=True)  # Время следующего уведомления
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=moscow_now)
+    updated_at = Column(DateTime, default=moscow_now, onupdate=moscow_now)
 
 
 def init_db():
@@ -125,7 +153,7 @@ def update_note(note_id: int, user_id: int, title: str = None, content: str = No
                 note.title = title
             if content is not None:
                 note.content = content
-            note.updated_at = datetime.utcnow()
+            note.updated_at = moscow_now()
             db.commit()
             db.refresh(note)
             db.expunge(note)  # Отвязываем объект от сессии
@@ -153,8 +181,7 @@ def create_task(user_id: int, title: str, description: str = "", interval_minute
     """Создать новую задачу"""
     db = SessionLocal()
     try:
-        from datetime import timedelta
-        next_notification = datetime.utcnow() + timedelta(minutes=interval_minutes)
+        next_notification = moscow_now() + timedelta(minutes=interval_minutes)
         task = Task(
             user_id=user_id,
             title=title,
@@ -213,11 +240,10 @@ def update_task(task_id: int, user_id: int, title: str = None, description: str 
             if interval_minutes is not None:
                 task.interval_minutes = interval_minutes
                 # Пересчитываем следующее уведомление
-                from datetime import timedelta
-                task.next_notification = datetime.utcnow() + timedelta(minutes=interval_minutes)
+                task.next_notification = moscow_now() + timedelta(minutes=interval_minutes)
             if is_active is not None:
                 task.is_active = is_active
-            task.updated_at = datetime.utcnow()
+            task.updated_at = moscow_now()
             db.commit()
             db.refresh(task)
             db.expunge(task)  # Отвязываем объект от сессии
@@ -246,7 +272,7 @@ def get_tasks_due_for_notification() -> list:
     try:
         tasks = db.query(Task).filter(
             Task.is_active == True,
-            Task.next_notification <= datetime.utcnow()
+            Task.next_notification <= moscow_now()
         ).all()
         for task in tasks:
             db.expunge(task)  # Отвязываем объекты от сессии
@@ -261,11 +287,87 @@ def update_task_next_notification(task_id: int) -> Task:
     try:
         task = db.query(Task).filter(Task.id == task_id).first()
         if task:
-            from datetime import timedelta
-            task.next_notification = datetime.utcnow() + timedelta(minutes=task.interval_minutes)
+            task.next_notification = moscow_now() + timedelta(minutes=task.interval_minutes)
             db.commit()
             db.refresh(task)
             db.expunge(task)  # Отвязываем объект от сессии
         return task
+    finally:
+        db.close()
+
+
+# Функции для работы с вложениями
+def create_attachment(note_id: int, filename: str, stored_filename: str, 
+                      file_type: str, mime_type: str = None, file_size: int = None) -> Attachment:
+    """Создать новое вложение"""
+    db = SessionLocal()
+    try:
+        attachment = Attachment(
+            note_id=note_id,
+            filename=filename,
+            stored_filename=stored_filename,
+            file_type=file_type,
+            mime_type=mime_type,
+            file_size=file_size
+        )
+        db.add(attachment)
+        db.commit()
+        db.refresh(attachment)
+        db.expunge(attachment)
+        return attachment
+    finally:
+        db.close()
+
+
+def get_attachments_by_note(note_id: int) -> list:
+    """Получить все вложения заметки"""
+    db = SessionLocal()
+    try:
+        attachments = db.query(Attachment).filter(Attachment.note_id == note_id).order_by(Attachment.created_at.asc()).all()
+        for attachment in attachments:
+            db.expunge(attachment)
+        return attachments
+    finally:
+        db.close()
+
+
+def get_attachment_by_id(attachment_id: int) -> Attachment:
+    """Получить вложение по ID"""
+    db = SessionLocal()
+    try:
+        attachment = db.query(Attachment).filter(Attachment.id == attachment_id).first()
+        if attachment:
+            db.expunge(attachment)
+        return attachment
+    finally:
+        db.close()
+
+
+def delete_attachment(attachment_id: int) -> Attachment:
+    """Удалить вложение и вернуть его данные для удаления файла"""
+    db = SessionLocal()
+    try:
+        attachment = db.query(Attachment).filter(Attachment.id == attachment_id).first()
+        if attachment:
+            db.expunge(attachment)
+            db.query(Attachment).filter(Attachment.id == attachment_id).delete()
+            db.commit()
+        return attachment
+    finally:
+        db.close()
+
+
+def get_note_with_attachments(note_id: int, user_id: int):
+    """Получить заметку с вложениями"""
+    db = SessionLocal()
+    try:
+        note = db.query(Note).filter(Note.id == note_id, Note.user_id == user_id).first()
+        if note:
+            attachments = db.query(Attachment).filter(Attachment.note_id == note_id).order_by(Attachment.created_at.asc()).all()
+            db.expunge(note)
+            for att in attachments:
+                db.expunge(att)
+            return note, attachments
+        return None, []
     finally:
         db.close()
