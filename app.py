@@ -83,9 +83,14 @@ def verify_telegram_data(init_data: str) -> dict:
         # В режиме разработки без токена возвращаем тестовые данные
         return {"id": 123456789, "first_name": "Test", "username": "testuser"}
     
+    # Проверяем, что init_data не пустая и содержит корректный формат
+    if not init_data or '=' not in init_data:
+        print(f"Ошибка верификации: init_data пустая или некорректная")
+        return None
+    
     try:
         # Парсим init_data
-        parsed_data = dict(x.split('=') for x in init_data.split('&'))
+        parsed_data = dict(x.split('=', 1) for x in init_data.split('&') if '=' in x)
         
         # Получаем hash и удаляем его из данных
         received_hash = parsed_data.pop('hash', '')
