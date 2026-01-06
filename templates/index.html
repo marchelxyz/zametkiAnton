@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Мои Заметки</title>
+    <title>Заметки и Задачи</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <style>
         :root {
@@ -35,7 +35,7 @@
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 20px;
+            margin-bottom: 16px;
         }
 
         h1 {
@@ -63,13 +63,49 @@
             transform: scale(0.95);
         }
 
-        .notes-list {
+        /* Табы */
+        .tabs {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 16px;
+            background-color: var(--tg-theme-secondary-bg-color);
+            border-radius: 12px;
+            padding: 4px;
+        }
+
+        .tab {
+            flex: 1;
+            padding: 10px 16px;
+            border: none;
+            background: transparent;
+            border-radius: 10px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            color: var(--tg-theme-hint-color);
+            transition: all 0.2s;
+        }
+
+        .tab.active {
+            background-color: var(--tg-theme-button-color);
+            color: var(--tg-theme-button-text-color);
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .notes-list, .tasks-list {
             display: flex;
             flex-direction: column;
             gap: 12px;
         }
 
-        .note-card {
+        .note-card, .task-card {
             background-color: var(--tg-theme-secondary-bg-color);
             border-radius: 12px;
             padding: 16px;
@@ -77,18 +113,18 @@
             transition: transform 0.2s, box-shadow 0.2s;
         }
 
-        .note-card:active {
+        .note-card:active, .task-card:active {
             transform: scale(0.98);
         }
 
-        .note-title {
+        .note-title, .task-title {
             font-size: 16px;
             font-weight: 600;
             margin-bottom: 6px;
             word-wrap: break-word;
         }
 
-        .note-content {
+        .note-content, .task-description {
             font-size: 14px;
             color: var(--tg-theme-hint-color);
             overflow: hidden;
@@ -99,10 +135,86 @@
             word-wrap: break-word;
         }
 
-        .note-date {
+        .note-date, .task-info {
             font-size: 12px;
             color: var(--tg-theme-hint-color);
             margin-top: 8px;
+        }
+
+        .task-card {
+            position: relative;
+        }
+
+        .task-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 6px;
+        }
+
+        .task-status {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 4px 8px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 500;
+        }
+
+        .task-status.active {
+            background-color: rgba(52, 199, 89, 0.2);
+            color: #34c759;
+        }
+
+        .task-status.paused {
+            background-color: rgba(255, 149, 0, 0.2);
+            color: #ff9500;
+        }
+
+        .task-interval {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 13px;
+            color: var(--tg-theme-link-color);
+            margin-top: 8px;
+        }
+
+        .task-actions {
+            display: flex;
+            gap: 8px;
+            margin-top: 12px;
+            padding-top: 12px;
+            border-top: 1px solid rgba(0,0,0,0.05);
+        }
+
+        .task-action-btn {
+            flex: 1;
+            padding: 8px;
+            border: none;
+            border-radius: 8px;
+            font-size: 13px;
+            cursor: pointer;
+            transition: opacity 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 4px;
+        }
+
+        .task-action-btn:active {
+            opacity: 0.7;
+        }
+
+        .task-action-btn.toggle {
+            background-color: var(--tg-theme-button-color);
+            color: var(--tg-theme-button-text-color);
+        }
+
+        .task-action-btn.delete {
+            background-color: #ff3b30;
+            color: white;
         }
 
         .empty-state {
@@ -211,9 +323,42 @@
         }
 
         .form-textarea {
-            min-height: 200px;
+            min-height: 150px;
             resize: vertical;
             font-family: inherit;
+        }
+
+        .form-select {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid var(--tg-theme-secondary-bg-color);
+            border-radius: 8px;
+            font-size: 16px;
+            background-color: var(--tg-theme-secondary-bg-color);
+            color: var(--tg-theme-text-color);
+            appearance: none;
+            background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e");
+            background-repeat: no-repeat;
+            background-position: right 12px center;
+            background-size: 16px;
+        }
+
+        .form-select:focus {
+            outline: none;
+            border-color: var(--tg-theme-button-color);
+        }
+
+        .interval-group {
+            display: flex;
+            gap: 8px;
+        }
+
+        .interval-group .form-input {
+            flex: 1;
+        }
+
+        .interval-group .form-select {
+            flex: 1;
         }
 
         .loading {
@@ -227,31 +372,54 @@
             padding-top: 20px;
             border-top: 1px solid var(--tg-theme-secondary-bg-color);
         }
+
+        .next-notification {
+            font-size: 12px;
+            color: var(--tg-theme-hint-color);
+            margin-top: 4px;
+        }
     </style>
 </head>
 <body>
     <div id="app">
         <div class="header">
-            <h1>📝 Заметки</h1>
-            <button class="add-btn" onclick="openNewNote()">+</button>
+            <h1 id="page-title">📝 Заметки</h1>
+            <button class="add-btn" onclick="openNewItem()">+</button>
         </div>
 
-        <div id="loading" class="loading">Загрузка...</div>
+        <!-- Табы -->
+        <div class="tabs">
+            <button class="tab active" onclick="switchTab('notes')">📝 Заметки</button>
+            <button class="tab" onclick="switchTab('tasks')">⏰ Задачи</button>
+        </div>
 
-        <div id="notes-container" class="notes-list" style="display: none;"></div>
+        <!-- Контент заметок -->
+        <div id="notes-tab" class="tab-content active">
+            <div id="notes-loading" class="loading">Загрузка...</div>
+            <div id="notes-container" class="notes-list" style="display: none;"></div>
+            <div id="notes-empty" class="empty-state" style="display: none;">
+                <div class="empty-state-icon">📋</div>
+                <div class="empty-state-text">У вас пока нет заметок.<br>Нажмите + чтобы создать первую!</div>
+            </div>
+        </div>
 
-        <div id="empty-state" class="empty-state" style="display: none;">
-            <div class="empty-state-icon">📋</div>
-            <div class="empty-state-text">У вас пока нет заметок.<br>Нажмите + чтобы создать первую!</div>
+        <!-- Контент задач -->
+        <div id="tasks-tab" class="tab-content">
+            <div id="tasks-loading" class="loading">Загрузка...</div>
+            <div id="tasks-container" class="tasks-list" style="display: none;"></div>
+            <div id="tasks-empty" class="empty-state" style="display: none;">
+                <div class="empty-state-icon">⏰</div>
+                <div class="empty-state-text">У вас пока нет задач.<br>Нажмите + чтобы создать напоминание!</div>
+            </div>
         </div>
     </div>
 
-    <!-- Модальное окно для создания/редактирования -->
+    <!-- Модальное окно для заметок -->
     <div id="note-modal" class="modal">
         <div class="modal-header">
-            <span class="modal-title" id="modal-title">Новая заметка</span>
+            <span class="modal-title" id="note-modal-title">Новая заметка</span>
             <div class="modal-actions">
-                <button class="btn btn-secondary" onclick="closeModal()">Отмена</button>
+                <button class="btn btn-secondary" onclick="closeNoteModal()">Отмена</button>
                 <button class="btn btn-primary" onclick="saveNote()">Сохранить</button>
             </div>
         </div>
@@ -266,8 +434,45 @@
             <textarea id="note-content-input" class="form-input form-textarea" placeholder="Введите текст заметки..."></textarea>
         </div>
 
-        <div id="delete-zone" class="delete-zone" style="display: none;">
+        <div id="note-delete-zone" class="delete-zone" style="display: none;">
             <button class="btn btn-danger" onclick="deleteCurrentNote()">🗑 Удалить заметку</button>
+        </div>
+    </div>
+
+    <!-- Модальное окно для задач -->
+    <div id="task-modal" class="modal">
+        <div class="modal-header">
+            <span class="modal-title" id="task-modal-title">Новая задача</span>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" onclick="closeTaskModal()">Отмена</button>
+                <button class="btn btn-primary" onclick="saveTask()">Сохранить</button>
+            </div>
+        </div>
+
+        <div class="form-group">
+            <label class="form-label">Название задачи</label>
+            <input type="text" id="task-title-input" class="form-input" placeholder="Например: Выпить воды">
+        </div>
+
+        <div class="form-group">
+            <label class="form-label">Описание (необязательно)</label>
+            <textarea id="task-description-input" class="form-input form-textarea" placeholder="Добавьте подробности..."></textarea>
+        </div>
+
+        <div class="form-group">
+            <label class="form-label">Интервал напоминания</label>
+            <div class="interval-group">
+                <input type="number" id="interval-value" class="form-input" value="1" min="1" max="999">
+                <select id="interval-unit" class="form-select">
+                    <option value="minutes">Минут</option>
+                    <option value="hours" selected>Часов</option>
+                    <option value="days">Дней</option>
+                </select>
+            </div>
+        </div>
+
+        <div id="task-delete-zone" class="delete-zone" style="display: none;">
+            <button class="btn btn-danger" onclick="deleteCurrentTask()">🗑 Удалить задачу</button>
         </div>
     </div>
 
@@ -289,7 +494,10 @@
         }
 
         let notes = [];
+        let tasks = [];
         let currentNoteId = null;
+        let currentTaskId = null;
+        let currentTab = 'notes';
 
         // Получаем initData для авторизации
         function getInitData() {
@@ -314,7 +522,37 @@
             return response.json();
         }
 
-        // Загрузка заметок
+        // Переключение табов
+        function switchTab(tab) {
+            currentTab = tab;
+            
+            // Обновляем активный таб
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+            
+            if (tab === 'notes') {
+                document.querySelector('.tab:first-child').classList.add('active');
+                document.getElementById('notes-tab').classList.add('active');
+                document.getElementById('page-title').textContent = '📝 Заметки';
+            } else {
+                document.querySelector('.tab:last-child').classList.add('active');
+                document.getElementById('tasks-tab').classList.add('active');
+                document.getElementById('page-title').textContent = '⏰ Задачи';
+                loadTasks();
+            }
+        }
+
+        // Открыть новый элемент в зависимости от таба
+        function openNewItem() {
+            if (currentTab === 'notes') {
+                openNewNote();
+            } else {
+                openNewTask();
+            }
+        }
+
+        // ==================== ЗАМЕТКИ ====================
+
         async function loadNotes() {
             try {
                 const result = await apiCall('GET', '/api/notes');
@@ -322,15 +560,14 @@
                 renderNotes();
             } catch (error) {
                 console.error('Ошибка загрузки:', error);
-                document.getElementById('loading').textContent = 'Ошибка загрузки';
+                document.getElementById('notes-loading').textContent = 'Ошибка загрузки';
             }
         }
 
-        // Отрисовка заметок
         function renderNotes() {
             const container = document.getElementById('notes-container');
-            const emptyState = document.getElementById('empty-state');
-            const loading = document.getElementById('loading');
+            const emptyState = document.getElementById('notes-empty');
+            const loading = document.getElementById('notes-loading');
 
             loading.style.display = 'none';
 
@@ -352,60 +589,37 @@
             `).join('');
         }
 
-        // Escape HTML для безопасности
-        function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
-        }
-
-        // Форматирование даты
-        function formatDate(dateString) {
-            if (!dateString) return '';
-            const date = new Date(dateString);
-            return date.toLocaleDateString('ru-RU', {
-                day: 'numeric',
-                month: 'short',
-                hour: '2-digit',
-                minute: '2-digit'
-            });
-        }
-
-        // Открыть модальное окно для новой заметки
         function openNewNote() {
             currentNoteId = null;
-            document.getElementById('modal-title').textContent = 'Новая заметка';
+            document.getElementById('note-modal-title').textContent = 'Новая заметка';
             document.getElementById('note-title-input').value = '';
             document.getElementById('note-content-input').value = '';
-            document.getElementById('delete-zone').style.display = 'none';
+            document.getElementById('note-delete-zone').style.display = 'none';
             document.getElementById('note-modal').classList.add('active');
             tg.BackButton.show();
-            tg.BackButton.onClick(closeModal);
+            tg.BackButton.onClick(closeNoteModal);
         }
 
-        // Открыть существующую заметку
         function openNote(noteId) {
             const note = notes.find(n => n.id === noteId);
             if (!note) return;
 
             currentNoteId = noteId;
-            document.getElementById('modal-title').textContent = 'Редактирование';
+            document.getElementById('note-modal-title').textContent = 'Редактирование';
             document.getElementById('note-title-input').value = note.title;
             document.getElementById('note-content-input').value = note.content || '';
-            document.getElementById('delete-zone').style.display = 'block';
+            document.getElementById('note-delete-zone').style.display = 'block';
             document.getElementById('note-modal').classList.add('active');
             tg.BackButton.show();
-            tg.BackButton.onClick(closeModal);
+            tg.BackButton.onClick(closeNoteModal);
         }
 
-        // Закрыть модальное окно
-        function closeModal() {
+        function closeNoteModal() {
             document.getElementById('note-modal').classList.remove('active');
             tg.BackButton.hide();
-            tg.BackButton.offClick(closeModal);
+            tg.BackButton.offClick(closeNoteModal);
         }
 
-        // Сохранить заметку
         async function saveNote() {
             const title = document.getElementById('note-title-input').value.trim();
             const content = document.getElementById('note-content-input').value.trim();
@@ -417,14 +631,12 @@
 
             try {
                 if (currentNoteId) {
-                    // Обновление существующей заметки
                     await apiCall('PUT', `/api/notes/${currentNoteId}`, { title, content });
                 } else {
-                    // Создание новой заметки
                     await apiCall('POST', '/api/notes', { title, content });
                 }
 
-                closeModal();
+                closeNoteModal();
                 await loadNotes();
                 tg.HapticFeedback.notificationOccurred('success');
             } catch (error) {
@@ -433,7 +645,6 @@
             }
         }
 
-        // Удалить заметку
         async function deleteCurrentNote() {
             if (!currentNoteId) return;
 
@@ -441,7 +652,7 @@
                 if (confirmed) {
                     try {
                         await apiCall('DELETE', `/api/notes/${currentNoteId}`);
-                        closeModal();
+                        closeNoteModal();
                         await loadNotes();
                         tg.HapticFeedback.notificationOccurred('success');
                     } catch (error) {
@@ -450,6 +661,245 @@
                     }
                 }
             });
+        }
+
+        // ==================== ЗАДАЧИ ====================
+
+        async function loadTasks() {
+            try {
+                document.getElementById('tasks-loading').style.display = 'block';
+                document.getElementById('tasks-container').style.display = 'none';
+                document.getElementById('tasks-empty').style.display = 'none';
+                
+                const result = await apiCall('GET', '/api/tasks?active_only=false');
+                tasks = result.tasks || [];
+                renderTasks();
+            } catch (error) {
+                console.error('Ошибка загрузки задач:', error);
+                document.getElementById('tasks-loading').textContent = 'Ошибка загрузки';
+            }
+        }
+
+        function renderTasks() {
+            const container = document.getElementById('tasks-container');
+            const emptyState = document.getElementById('tasks-empty');
+            const loading = document.getElementById('tasks-loading');
+
+            loading.style.display = 'none';
+
+            if (tasks.length === 0) {
+                container.style.display = 'none';
+                emptyState.style.display = 'block';
+                return;
+            }
+
+            emptyState.style.display = 'none';
+            container.style.display = 'flex';
+
+            container.innerHTML = tasks.map(task => `
+                <div class="task-card">
+                    <div class="task-header">
+                        <div class="task-title">${escapeHtml(task.title)}</div>
+                        <span class="task-status ${task.is_active ? 'active' : 'paused'}">
+                            ${task.is_active ? '🔔 Активна' : '⏸ Пауза'}
+                        </span>
+                    </div>
+                    ${task.description ? `<div class="task-description">${escapeHtml(task.description)}</div>` : ''}
+                    <div class="task-interval">⏰ Каждые ${formatInterval(task.interval_minutes)}</div>
+                    ${task.is_active && task.next_notification ? `
+                        <div class="next-notification">Следующее: ${formatDate(task.next_notification)}</div>
+                    ` : ''}
+                    <div class="task-actions">
+                        <button class="task-action-btn toggle" onclick="toggleTask(${task.id}, event)">
+                            ${task.is_active ? '⏸ Пауза' : '▶️ Включить'}
+                        </button>
+                        <button class="task-action-btn delete" onclick="deleteTask(${task.id}, event)">
+                            🗑 Удалить
+                        </button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function openNewTask() {
+            currentTaskId = null;
+            document.getElementById('task-modal-title').textContent = 'Новая задача';
+            document.getElementById('task-title-input').value = '';
+            document.getElementById('task-description-input').value = '';
+            document.getElementById('interval-value').value = '1';
+            document.getElementById('interval-unit').value = 'hours';
+            document.getElementById('task-delete-zone').style.display = 'none';
+            document.getElementById('task-modal').classList.add('active');
+            tg.BackButton.show();
+            tg.BackButton.onClick(closeTaskModal);
+        }
+
+        function openTask(taskId) {
+            const task = tasks.find(t => t.id === taskId);
+            if (!task) return;
+
+            currentTaskId = taskId;
+            document.getElementById('task-modal-title').textContent = 'Редактирование';
+            document.getElementById('task-title-input').value = task.title;
+            document.getElementById('task-description-input').value = task.description || '';
+            
+            // Определяем единицу и значение интервала
+            let value, unit;
+            if (task.interval_minutes >= 1440 && task.interval_minutes % 1440 === 0) {
+                value = task.interval_minutes / 1440;
+                unit = 'days';
+            } else if (task.interval_minutes >= 60 && task.interval_minutes % 60 === 0) {
+                value = task.interval_minutes / 60;
+                unit = 'hours';
+            } else {
+                value = task.interval_minutes;
+                unit = 'minutes';
+            }
+            
+            document.getElementById('interval-value').value = value;
+            document.getElementById('interval-unit').value = unit;
+            document.getElementById('task-delete-zone').style.display = 'block';
+            document.getElementById('task-modal').classList.add('active');
+            tg.BackButton.show();
+            tg.BackButton.onClick(closeTaskModal);
+        }
+
+        function closeTaskModal() {
+            document.getElementById('task-modal').classList.remove('active');
+            tg.BackButton.hide();
+            tg.BackButton.offClick(closeTaskModal);
+        }
+
+        function getIntervalMinutes() {
+            const value = parseInt(document.getElementById('interval-value').value) || 1;
+            const unit = document.getElementById('interval-unit').value;
+            
+            switch (unit) {
+                case 'minutes': return value;
+                case 'hours': return value * 60;
+                case 'days': return value * 1440;
+                default: return value;
+            }
+        }
+
+        async function saveTask() {
+            const title = document.getElementById('task-title-input').value.trim();
+            const description = document.getElementById('task-description-input').value.trim();
+            const interval_minutes = getIntervalMinutes();
+
+            if (!title) {
+                tg.showAlert('Введите название задачи');
+                return;
+            }
+
+            try {
+                if (currentTaskId) {
+                    await apiCall('PUT', `/api/tasks/${currentTaskId}`, { 
+                        title, 
+                        description, 
+                        interval_minutes 
+                    });
+                } else {
+                    await apiCall('POST', '/api/tasks', { 
+                        title, 
+                        description, 
+                        interval_minutes 
+                    });
+                }
+
+                closeTaskModal();
+                await loadTasks();
+                tg.HapticFeedback.notificationOccurred('success');
+            } catch (error) {
+                console.error('Ошибка сохранения:', error);
+                tg.showAlert('Ошибка сохранения задачи');
+            }
+        }
+
+        async function toggleTask(taskId, event) {
+            event.stopPropagation();
+            try {
+                await apiCall('POST', `/api/tasks/${taskId}/toggle`);
+                await loadTasks();
+                tg.HapticFeedback.impactOccurred('light');
+            } catch (error) {
+                console.error('Ошибка переключения:', error);
+                tg.showAlert('Ошибка переключения статуса');
+            }
+        }
+
+        async function deleteTask(taskId, event) {
+            event.stopPropagation();
+            
+            tg.showConfirm('Удалить эту задачу и отключить уведомления?', async (confirmed) => {
+                if (confirmed) {
+                    try {
+                        await apiCall('DELETE', `/api/tasks/${taskId}`);
+                        await loadTasks();
+                        tg.HapticFeedback.notificationOccurred('success');
+                    } catch (error) {
+                        console.error('Ошибка удаления:', error);
+                        tg.showAlert('Ошибка удаления задачи');
+                    }
+                }
+            });
+        }
+
+        async function deleteCurrentTask() {
+            if (!currentTaskId) return;
+
+            tg.showConfirm('Удалить эту задачу?', async (confirmed) => {
+                if (confirmed) {
+                    try {
+                        await apiCall('DELETE', `/api/tasks/${currentTaskId}`);
+                        closeTaskModal();
+                        await loadTasks();
+                        tg.HapticFeedback.notificationOccurred('success');
+                    } catch (error) {
+                        console.error('Ошибка удаления:', error);
+                        tg.showAlert('Ошибка удаления задачи');
+                    }
+                }
+            });
+        }
+
+        // ==================== УТИЛИТЫ ====================
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function formatDate(dateString) {
+            if (!dateString) return '';
+            const date = new Date(dateString);
+            return date.toLocaleDateString('ru-RU', {
+                day: 'numeric',
+                month: 'short',
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+        }
+
+        function formatInterval(minutes) {
+            if (minutes < 60) {
+                return `${minutes} мин.`;
+            } else if (minutes < 1440) {
+                const hours = Math.floor(minutes / 60);
+                const remainingMins = minutes % 60;
+                if (remainingMins === 0) {
+                    return `${hours} ч.`;
+                }
+                return `${hours} ч. ${remainingMins} мин.`;
+            } else {
+                const days = Math.floor(minutes / 1440);
+                const remainingHours = Math.floor((minutes % 1440) / 60);
+                if (remainingHours === 0) {
+                    return `${days} дн.`;
+                }
+                return `${days} дн. ${remainingHours} ч.`;
+            }
         }
 
         // Загружаем заметки при старте
