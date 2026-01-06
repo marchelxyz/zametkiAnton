@@ -468,18 +468,21 @@ def api_toggle_task(task_id):
     })
 
 
-if __name__ == '__main__':
-    # Инициализация базы данных при запуске
-    init_db()
-    
-    # Запуск планировщика для проверки уведомлений каждую минуту
-    scheduler.add_job(func=check_and_send_notifications, trigger="interval", minutes=1)
+# Инициализация базы данных при загрузке модуля (работает и с gunicorn)
+init_db()
+
+# Запуск планировщика для проверки уведомлений каждую минуту
+# Проверяем, не запущен ли уже планировщик (для избежания дублирования при перезагрузке)
+if not scheduler.running:
+    scheduler.add_job(func=check_and_send_notifications, trigger="interval", minutes=1, id="notification_checker", replace_existing=True)
     scheduler.start()
     print("[INFO] Планировщик уведомлений запущен!")
-    
-    # Регистрируем остановку планировщика при выходе
-    atexit.register(lambda: scheduler.shutdown())
-    
-    # Запуск сервера
+
+# Регистрируем остановку планировщика при выходе
+atexit.register(lambda: scheduler.shutdown(wait=False) if scheduler.running else None)
+
+
+if __name__ == '__main__':
+    # Запуск сервера в режиме разработки
     port = int(os.getenv("PORT", 5000))
     app.run(host='0.0.0.0', port=port, debug=os.getenv("DEBUG", "false").lower() == "true")
