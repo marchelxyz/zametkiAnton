@@ -79,13 +79,22 @@ def verify_telegram_data(init_data: str) -> dict:
     Проверка данных от Telegram Mini App.
     Возвращает данные пользователя если валидация успешна.
     """
+    # Режим отладки для тестирования вне Telegram
+    debug_mode = os.getenv("DEBUG", "false").lower() == "true"
+    
     if not BOT_TOKEN:
         # В режиме разработки без токена возвращаем тестовые данные
+        print("[DEBUG] BOT_TOKEN не задан, используем тестовые данные")
         return {"id": 123456789, "first_name": "Test", "username": "testuser"}
     
     # Проверяем, что init_data не пустая и содержит корректный формат
     if not init_data or '=' not in init_data:
-        print(f"Ошибка верификации: init_data пустая или некорректная")
+        if debug_mode:
+            # В режиме отладки возвращаем тестовые данные
+            print(f"[DEBUG] init_data пустая, используем тестовые данные (DEBUG режим)")
+            return {"id": 123456789, "first_name": "Debug", "username": "debuguser"}
+        print(f"[ERR] Ошибка верификации: init_data пустая или некорректная. "
+              f"Убедитесь, что приложение открыто через Telegram Mini App.")
         return None
     
     try:

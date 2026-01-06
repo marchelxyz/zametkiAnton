@@ -498,19 +498,60 @@
         let currentNoteId = null;
         let currentTaskId = null;
         let currentTab = 'notes';
+        let isInTelegram = false;
+
+        // Проверяем, запущено ли приложение в Telegram
+        function checkTelegramEnvironment() {
+            // Проверяем наличие initData или initDataUnsafe с данными пользователя
+            isInTelegram = !!(tg.initData && tg.initData.length > 0) || 
+                           !!(tg.initDataUnsafe && tg.initDataUnsafe.user);
+            
+            console.log('[TG] initData length:', tg.initData ? tg.initData.length : 0);
+            console.log('[TG] isInTelegram:', isInTelegram);
+            console.log('[TG] platform:', tg.platform);
+            
+            if (!isInTelegram) {
+                console.warn('[TG] Приложение открыто вне Telegram. initData недоступна.');
+            }
+            
+            return isInTelegram;
+        }
+
+        // Показать предупреждение, если приложение открыто вне Telegram
+        function showNotInTelegramWarning() {
+            const notesLoading = document.getElementById('notes-loading');
+            notesLoading.innerHTML = `
+                <div style="text-align: center; padding: 40px 20px;">
+                    <div style="font-size: 48px; margin-bottom: 16px;">⚠️</div>
+                    <div style="font-size: 16px; color: var(--tg-theme-text-color); margin-bottom: 12px;">
+                        <b>Откройте в Telegram</b>
+                    </div>
+                    <div style="font-size: 14px; color: var(--tg-theme-hint-color);">
+                        Это приложение работает только<br>как Telegram Mini App.<br><br>
+                        Откройте бота и запустите<br>приложение через меню.
+                    </div>
+                </div>
+            `;
+        }
 
         // Получаем initData для авторизации
         function getInitData() {
-            return tg.initData || '';
+            const initData = tg.initData || '';
+            if (!initData) {
+                console.warn('[TG] getInitData: initData пустая');
+            }
+            return initData;
         }
 
         // API вызовы
         async function apiCall(method, endpoint, data = null) {
+            const initData = getInitData();
+            
             const options = {
                 method: method,
                 headers: {
                     'Content-Type': 'application/json',
-                    'X-Telegram-Init-Data': getInitData()
+                    'X-Telegram-Init-Data': initData
                 }
             };
 
@@ -523,7 +564,14 @@
             
             // Проверяем статус HTTP-ответа
             if (!response.ok) {
-                const errorMessage = result.error || `HTTP ошибка: ${response.status}`;
+                let errorMessage = result.error || `HTTP ошибка: ${response.status}`;
+                
+                // Специальная обработка ошибки авторизации
+                if (response.status === 401) {
+                    errorMessage = 'Ошибка авторизации. Пожалуйста, перезапустите приложение через Telegram.';
+                    console.error('[API] Ошибка 401. initData length:', initData.length);
+                }
+                
                 throw new Error(errorMessage);
             }
             
@@ -577,7 +625,24 @@
                 renderNotes();
             } catch (error) {
                 console.error('Ошибка загрузки:', error);
-                document.getElementById('notes-loading').textContent = 'Ошибка загрузки: ' + (error.message || 'Неизвестная ошибка');
+                
+                const loadingEl = document.getElementById('notes-loading');
+                
+                // Проверяем, связана ли ошибка с авторизацией
+                if (error.message.includes('авторизац') || error.message.includes('401') || error.message.includes('Unauthorized')) {
+                    loadingEl.innerHTML = `
+                        <div style="text-align: center; padding: 20px;">
+                            <div style="font-size: 32px; margin-bottom: 12px;">🔐</div>
+                            <div style="font-size: 14px; color: var(--tg-theme-hint-color);">
+                                Ошибка авторизации.<br>
+                                Пожалуйста, закройте и заново<br>
+                                откройте приложение через Telegram.
+                            </div>
+                        </div>
+                    `;
+                } else {
+                    loadingEl.textContent = 'Ошибка загрузки: ' + (error.message || 'Неизвестная ошибка');
+                }
             }
         }
 
@@ -705,7 +770,24 @@
                 renderTasks();
             } catch (error) {
                 console.error('Ошибка загрузки задач:', error);
-                document.getElementById('tasks-loading').textContent = 'Ошибка загрузки: ' + (error.message || 'Неизвестная ошибка');
+                
+                const loadingEl = document.getElementById('tasks-loading');
+                
+                // Проверяем, связана ли ошибка с авторизацией
+                if (error.message.includes('авторизац') || error.message.includes('401') || error.message.includes('Unauthorized')) {
+                    loadingEl.innerHTML = `
+                        <div style="text-align: center; padding: 20px;">
+                            <div style="font-size: 32px; margin-bottom: 12px;">🔐</div>
+                            <div style="font-size: 14px; color: var(--tg-theme-hint-color);">
+                                Ошибка авторизации.<br>
+                                Пожалуйста, закройте и заново<br>
+                                откройте приложение через Telegram.
+                            </div>
+                        </div>
+                    `;
+                } else {
+                    loadingEl.textContent = 'Ошибка загрузки: ' + (error.message || 'Неизвестная ошибка');
+                }
             }
         }
 
@@ -953,8 +1035,25 @@
             }
         }
 
-        // Загружаем заметки при старте
-        loadNotes();
+        // Инициализация приложения
+        function initApp() {
+            // Небольшая задержка для полной инициализации Telegram SDK
+            setTimeout(() => {
+                const inTelegram = checkTelegramEnvironment();
+                
+                if (!inTelegram) {
+                    // Показываем предупреждение, что приложение должно быть открыто в Telegram
+                    showNotInTelegramWarning();
+                    return;
+                }
+                
+                // Загружаем заметки при старте
+                loadNotes();
+            }, 100);
+        }
+
+        // Запускаем инициализацию
+        initApp();
     </script>
 </body>
 </html>
