@@ -262,24 +262,39 @@ def api_create_note():
     user = verify_telegram_data(init_data)
     
     if not user:
+        print("[API] /api/notes POST - Ошибка авторизации")
         return jsonify({"error": "Unauthorized"}), 401
     
     data = request.get_json()
+    if not data:
+        print("[API] /api/notes POST - Нет данных в запросе")
+        return jsonify({"error": "No data provided"}), 400
+    
     title = data.get('title', '').strip()
     content = data.get('content', '').strip()
     
     if not title:
+        print("[API] /api/notes POST - Пустой заголовок")
         return jsonify({"error": "Title is required"}), 400
     
     user_id = user.get('id')
-    note = create_note(user_id, title, content)
+    print(f"[API] /api/notes POST - Создание заметки для user_id={user_id}, title='{title[:30]}...'")
     
-    return jsonify({
-        "id": note.id,
-        "title": note.title,
-        "content": note.content,
-        "created_at": note.created_at.isoformat() if note.created_at else None
-    }), 201
+    try:
+        note = create_note(user_id, title, content)
+        print(f"[API] /api/notes POST - Заметка создана, id={note.id}")
+        
+        return jsonify({
+            "id": note.id,
+            "title": note.title,
+            "content": note.content,
+            "created_at": note.created_at.isoformat() if note.created_at else None
+        }), 201
+    except Exception as e:
+        print(f"[API] /api/notes POST - Ошибка создания: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": "Failed to create note"}), 500
 
 
 @app.route('/api/notes/<int:note_id>', methods=['GET'])
@@ -353,16 +368,7 @@ def api_delete_note(note_id):
     
     user_id = user.get('id')
     
-    # Удаляем файлы вложений перед удалением заметки
-    attachments = get_attachments_by_note(note_id)
-    for att in attachments:
-        try:
-            file_path = os.path.join(app.config['UPLOAD_FOLDER'], att.stored_filename)
-            if os.path.exists(file_path):
-                os.remove(file_path)
-        except Exception as e:
-            print(f"[ERROR] Ошибка удаления файла {att.stored_filename}: {e}")
-    
+    # Удаляем заметку (вложения удалятся каскадно благодаря CASCADE в БД)
     success = delete_note(note_id, user_id)
     
     if not success:
@@ -403,25 +409,25 @@ def api_upload_attachment(note_id):
     
     # Генерируем безопасное имя файла
     original_filename = secure_filename(file.filename)
-    stored_filename = generate_stored_filename(original_filename)
     file_type = get_file_type(original_filename)
     
-    # Сохраняем файл
-    file_path = os.path.join(app.config['UPLOAD_FOLDER'], stored_filename)
-    file.save(file_path)
+    # Читаем данные файла в память
+    file_data = file.read()
+    file_size = len(file_data)
     
-    # Получаем размер файла
-    file_size = os.path.getsize(file_path)
+    # Проверяем размер (16 МБ максимум)
+    if file_size > MAX_CONTENT_LENGTH:
+        return jsonify({"error": "File too large (max 16 MB)"}), 400
     
     # Определяем MIME тип
     mime_type = file.content_type
     
-    # Создаём запись в БД
+    # Создаём запись в БД с бинарными данными
     attachment = create_attachment(
         note_id=note_id,
         filename=original_filename,
-        stored_filename=stored_filename,
         file_type=file_type,
+        file_data=file_data,
         mime_type=mime_type,
         file_size=file_size
     )
@@ -446,7 +452,7 @@ def api_get_attachment(attachment_id):
     
     user_id = user.get('id')
     
-    # Получаем вложение
+    # Получаем вложение с данными
     attachment = get_attachment_by_id(attachment_id)
     if not attachment:
         return jsonify({"error": "Attachment not found"}), 404
@@ -456,13 +462,19 @@ def api_get_attachment(attachment_id):
     if not note:
         return jsonify({"error": "Attachment not found"}), 404
     
-    # Отправляем файл
-    return send_from_directory(
-        app.config['UPLOAD_FOLDER'],
-        attachment.stored_filename,
-        download_name=attachment.filename,
-        as_attachment=False
+    # Проверяем наличие данных файла
+    if not attachment.file_data:
+        return jsonify({"error": "File data not found"}), 404
+    
+    # Возвращаем файл из БД
+    from flask import Response
+    response = Response(
+        attachment.file_data,
+        mimetype=attachment.mime_type or 'application/octet-stream'
     )
+    response.headers['Content-Disposition'] = f'inline; filename="{attachment.filename}"'
+    response.headers['Content-Length'] = len(attachment.file_data)
+    return response
 
 
 @app.route('/api/attachments/<int:attachment_id>', methods=['DELETE'])
@@ -486,15 +498,7 @@ def api_delete_attachment(attachment_id):
     if not note:
         return jsonify({"error": "Attachment not found"}), 404
     
-    # Удаляем файл
-    try:
-        file_path = os.path.join(app.config['UPLOAD_FOLDER'], attachment.stored_filename)
-        if os.path.exists(file_path):
-            os.remove(file_path)
-    except Exception as e:
-        print(f"[ERROR] Ошибка удаления файла: {e}")
-    
-    # Удаляем запись из БД
+    # Удаляем запись из БД (файл хранится в БД, так что удаление записи удалит и данные)
     delete_attachment(attachment_id)
     
     return jsonify({"success": True})
@@ -577,14 +581,20 @@ def api_create_task():
     user = verify_telegram_data(init_data)
     
     if not user:
+        print("[API] /api/tasks POST - Ошибка авторизации")
         return jsonify({"error": "Unauthorized"}), 401
     
     data = request.get_json()
+    if not data:
+        print("[API] /api/tasks POST - Нет данных в запросе")
+        return jsonify({"error": "No data provided"}), 400
+    
     title = data.get('title', '').strip()
     description = data.get('description', '').strip()
     interval_minutes = data.get('interval_minutes', 60)
     
     if not title:
+        print("[API] /api/tasks POST - Пустой заголовок")
         return jsonify({"error": "Title is required"}), 400
     
     # Валидация интервала
@@ -598,25 +608,34 @@ def api_create_task():
         interval_minutes = 60
     
     user_id = user.get('id')
-    task = create_task(user_id, title, description, interval_minutes)
+    print(f"[API] /api/tasks POST - Создание задачи для user_id={user_id}, title='{title[:30]}...'")
     
-    # Отправляем начальное уведомление о создании задачи
-    message = f"✅ <b>Задача создана!</b>\n\n" \
-              f"📌 <b>{task.title}</b>\n"
-    if task.description:
-        message += f"📝 {task.description}\n"
-    message += f"\n⏰ Напоминания каждые {format_interval(interval_minutes)}"
-    send_telegram_message(user_id, message)
-    
-    return jsonify({
-        "id": task.id,
-        "title": task.title,
-        "description": task.description,
-        "interval_minutes": task.interval_minutes,
-        "is_active": task.is_active,
-        "next_notification": task.next_notification.isoformat() if task.next_notification else None,
-        "created_at": task.created_at.isoformat() if task.created_at else None
-    }), 201
+    try:
+        task = create_task(user_id, title, description, interval_minutes)
+        print(f"[API] /api/tasks POST - Задача создана, id={task.id}")
+        
+        # Отправляем начальное уведомление о создании задачи
+        message = f"✅ <b>Задача создана!</b>\n\n" \
+                  f"📌 <b>{task.title}</b>\n"
+        if task.description:
+            message += f"📝 {task.description}\n"
+        message += f"\n⏰ Напоминания каждые {format_interval(interval_minutes)}"
+        send_telegram_message(user_id, message)
+        
+        return jsonify({
+            "id": task.id,
+            "title": task.title,
+            "description": task.description,
+            "interval_minutes": task.interval_minutes,
+            "is_active": task.is_active,
+            "next_notification": task.next_notification.isoformat() if task.next_notification else None,
+            "created_at": task.created_at.isoformat() if task.created_at else None
+        }), 201
+    except Exception as e:
+        print(f"[API] /api/tasks POST - Ошибка создания: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": "Failed to create task"}), 500
 
 
 def format_interval(minutes: int) -> str:

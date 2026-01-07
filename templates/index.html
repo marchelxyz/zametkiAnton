@@ -828,6 +828,29 @@
             return initData;
         }
 
+        // Вспомогательная функция для показа сообщений
+        function showMessage(message, type = 'info') {
+            console.log('[MSG]', type, message);
+            try {
+                if (type === 'error') {
+                    if (tg && tg.showAlert) {
+                        tg.showAlert(message);
+                    } else {
+                        alert(message);
+                    }
+                } else {
+                    if (tg && tg.showAlert) {
+                        tg.showAlert(message);
+                    } else {
+                        alert(message);
+                    }
+                }
+            } catch (e) {
+                console.error('[MSG] Ошибка показа сообщения:', e);
+                alert(message);
+            }
+        }
+
         // API вызовы
         async function apiCall(method, endpoint, data = null) {
             const initData = getInitData();
@@ -853,8 +876,22 @@
 
             console.log('[API]', method, endpoint, 'initData length:', initData.length);
             
-            const response = await fetch(endpoint, options);
-            const result = await response.json();
+            let response;
+            let result;
+            
+            try {
+                response = await fetch(endpoint, options);
+            } catch (networkError) {
+                console.error('[API] Сетевая ошибка:', networkError);
+                throw new Error('Ошибка сети. Проверьте подключение к интернету.');
+            }
+            
+            try {
+                result = await response.json();
+            } catch (parseError) {
+                console.error('[API] Ошибка парсинга JSON:', parseError);
+                throw new Error(`Ошибка сервера: ${response.status}`);
+            }
             
             // Проверяем статус HTTP-ответа
             if (!response.ok) {
@@ -1095,7 +1132,7 @@
             if (!files || files.length === 0) return;
             
             if (!currentNoteId) {
-                tg.showAlert('Сначала сохраните заметку');
+                showMessage('Сначала сохраните заметку', 'error');
                 return;
             }
             
@@ -1107,6 +1144,7 @@
             
             let successCount = 0;
             let errorCount = 0;
+            let lastError = '';
             
             for (let i = 0; i < files.length; i++) {
                 const file = files[i];
@@ -1114,15 +1152,17 @@
                 
                 try {
                     const result = await uploadFile(file);
-                    if (result) {
+                    if (result && result.id) {
                         currentAttachments.push(result);
                         successCount++;
                     } else {
                         errorCount++;
+                        lastError = 'Неизвестная ошибка';
                     }
                 } catch (error) {
                     console.error('Ошибка загрузки:', error);
                     errorCount++;
+                    lastError = error.message || 'Ошибка загрузки';
                 }
             }
             
@@ -1143,9 +1183,11 @@
             
             // Показываем результат
             if (errorCount > 0) {
-                tg.showAlert(`Загружено: ${successCount}, ошибок: ${errorCount}`);
+                showMessage(`Загружено: ${successCount}, ошибок: ${errorCount}. ${lastError}`, 'error');
             } else if (successCount > 0) {
-                tg.HapticFeedback.notificationOccurred('success');
+                try {
+                    tg.HapticFeedback.notificationOccurred('success');
+                } catch(e) {}
             }
         }
 
@@ -1155,20 +1197,38 @@
             
             const initData = getInitData();
             
-            const response = await fetch(`/api/notes/${currentNoteId}/attachments`, {
-                method: 'POST',
-                headers: {
-                    'X-Telegram-Init-Data': initData
-                },
-                body: formData
-            });
-            
-            if (!response.ok) {
-                const result = await response.json();
-                throw new Error(result.error || 'Ошибка загрузки');
+            if (!initData) {
+                throw new Error('Ошибка авторизации');
             }
             
-            return await response.json();
+            let response;
+            try {
+                response = await fetch(`/api/notes/${currentNoteId}/attachments`, {
+                    method: 'POST',
+                    headers: {
+                        'X-Telegram-Init-Data': initData
+                    },
+                    body: formData
+                });
+            } catch (networkError) {
+                console.error('[UPLOAD] Сетевая ошибка:', networkError);
+                throw new Error('Ошибка сети');
+            }
+            
+            let result;
+            try {
+                result = await response.json();
+            } catch (parseError) {
+                console.error('[UPLOAD] Ошибка парсинга:', parseError);
+                throw new Error(`Ошибка сервера: ${response.status}`);
+            }
+            
+            if (!response.ok) {
+                console.error('[UPLOAD] Ошибка HTTP:', response.status, result);
+                throw new Error(result.error || `Ошибка: ${response.status}`);
+            }
+            
+            return result;
         }
 
         function viewImage(attachmentId) {
@@ -1193,39 +1253,48 @@
         async function deleteAttachment(attachmentId, event) {
             event.stopPropagation();
             
-            tg.showConfirm('Удалить это вложение?', async (confirmed) => {
-                if (confirmed) {
-                    try {
-                        const initData = getInitData();
-                        const response = await fetch(`/api/attachments/${attachmentId}`, {
-                            method: 'DELETE',
-                            headers: {
-                                'X-Telegram-Init-Data': initData
-                            }
-                        });
-                        
-                        if (!response.ok) {
-                            throw new Error('Ошибка удаления');
+            const doDelete = async () => {
+                try {
+                    const initData = getInitData();
+                    const response = await fetch(`/api/attachments/${attachmentId}`, {
+                        method: 'DELETE',
+                        headers: {
+                            'X-Telegram-Init-Data': initData
                         }
-                        
-                        // Удаляем из локального списка
-                        currentAttachments = currentAttachments.filter(a => a.id !== attachmentId);
-                        
-                        // Обновляем заметку в списке
-                        const noteIndex = notes.findIndex(n => n.id === currentNoteId);
-                        if (noteIndex !== -1) {
-                            notes[noteIndex].attachments = currentAttachments;
-                        }
-                        
-                        renderAttachments();
-                        tg.HapticFeedback.notificationOccurred('success');
-                    } catch (error) {
-                        console.error('Ошибка удаления:', error);
-                        tg.HapticFeedback.notificationOccurred('error');
-                        tg.showAlert('Ошибка удаления вложения');
+                    });
+                    
+                    if (!response.ok) {
+                        const result = await response.json().catch(() => ({}));
+                        throw new Error(result.error || 'Ошибка удаления');
                     }
+                    
+                    // Удаляем из локального списка
+                    currentAttachments = currentAttachments.filter(a => a.id !== attachmentId);
+                    
+                    // Обновляем заметку в списке
+                    const noteIndex = notes.findIndex(n => n.id === currentNoteId);
+                    if (noteIndex !== -1) {
+                        notes[noteIndex].attachments = currentAttachments;
+                    }
+                    
+                    renderAttachments();
+                    try { tg.HapticFeedback.notificationOccurred('success'); } catch(e) {}
+                } catch (error) {
+                    console.error('Ошибка удаления:', error);
+                    try { tg.HapticFeedback.notificationOccurred('error'); } catch(e) {}
+                    showMessage('Ошибка удаления вложения: ' + (error.message || ''), 'error');
                 }
-            });
+            };
+
+            try {
+                tg.showConfirm('Удалить это вложение?', async (confirmed) => {
+                    if (confirmed) await doDelete();
+                });
+            } catch(e) {
+                if (confirm('Удалить это вложение?')) {
+                    await doDelete();
+                }
+            }
         }
 
         function closeNoteModal() {
@@ -1239,7 +1308,7 @@
             const content = document.getElementById('note-content-input').value.trim();
 
             if (!title) {
-                tg.showAlert('Введите заголовок заметки');
+                showMessage('Введите заголовок заметки', 'error');
                 return;
             }
 
@@ -1255,38 +1324,46 @@
                 if (result && result.id) {
                     closeNoteModal();
                     await loadNotes();
-                    tg.HapticFeedback.notificationOccurred('success');
+                    try { tg.HapticFeedback.notificationOccurred('success'); } catch(e) {}
                 } else {
                     throw new Error('Не удалось сохранить заметку');
                 }
             } catch (error) {
                 console.error('Ошибка сохранения:', error);
-                tg.HapticFeedback.notificationOccurred('error');
-                tg.showAlert('Ошибка сохранения: ' + (error.message || 'Неизвестная ошибка'));
+                try { tg.HapticFeedback.notificationOccurred('error'); } catch(e) {}
+                showMessage('Ошибка сохранения: ' + (error.message || 'Неизвестная ошибка'), 'error');
             }
         }
 
         async function deleteCurrentNote() {
             if (!currentNoteId) return;
 
-            tg.showConfirm('Удалить эту заметку?', async (confirmed) => {
-                if (confirmed) {
-                    try {
-                        const result = await apiCall('DELETE', `/api/notes/${currentNoteId}`);
-                        if (result && result.success) {
-                            closeNoteModal();
-                            await loadNotes();
-                            tg.HapticFeedback.notificationOccurred('success');
-                        } else {
-                            throw new Error('Не удалось удалить заметку');
-                        }
-                    } catch (error) {
-                        console.error('Ошибка удаления:', error);
-                        tg.HapticFeedback.notificationOccurred('error');
-                        tg.showAlert('Ошибка удаления: ' + (error.message || 'Неизвестная ошибка'));
+            const doDelete = async () => {
+                try {
+                    const result = await apiCall('DELETE', `/api/notes/${currentNoteId}`);
+                    if (result && result.success) {
+                        closeNoteModal();
+                        await loadNotes();
+                        try { tg.HapticFeedback.notificationOccurred('success'); } catch(e) {}
+                    } else {
+                        throw new Error('Не удалось удалить заметку');
                     }
+                } catch (error) {
+                    console.error('Ошибка удаления:', error);
+                    try { tg.HapticFeedback.notificationOccurred('error'); } catch(e) {}
+                    showMessage('Ошибка удаления: ' + (error.message || 'Неизвестная ошибка'), 'error');
                 }
-            });
+            };
+
+            try {
+                tg.showConfirm('Удалить эту заметку?', async (confirmed) => {
+                    if (confirmed) await doDelete();
+                });
+            } catch(e) {
+                if (confirm('Удалить эту заметку?')) {
+                    await doDelete();
+                }
+            }
         }
 
         // ==================== ЗАДАЧИ ====================
@@ -1441,7 +1518,7 @@
             const interval_minutes = getIntervalMinutes();
 
             if (!title) {
-                tg.showAlert('Введите название задачи');
+                showMessage('Введите название задачи', 'error');
                 return;
             }
 
@@ -1465,14 +1542,14 @@
                 if (result && result.id) {
                     closeTaskModal();
                     await loadTasks();
-                    tg.HapticFeedback.notificationOccurred('success');
+                    try { tg.HapticFeedback.notificationOccurred('success'); } catch(e) {}
                 } else {
                     throw new Error('Не удалось сохранить задачу');
                 }
             } catch (error) {
                 console.error('Ошибка сохранения:', error);
-                tg.HapticFeedback.notificationOccurred('error');
-                tg.showAlert('Ошибка сохранения: ' + (error.message || 'Неизвестная ошибка'));
+                try { tg.HapticFeedback.notificationOccurred('error'); } catch(e) {}
+                showMessage('Ошибка сохранения: ' + (error.message || 'Неизвестная ошибка'), 'error');
             }
         }
 
@@ -1482,60 +1559,76 @@
                 const result = await apiCall('POST', `/api/tasks/${taskId}/toggle`);
                 if (result && result.id) {
                     await loadTasks();
-                    tg.HapticFeedback.impactOccurred('light');
+                    try { tg.HapticFeedback.impactOccurred('light'); } catch(e) {}
                 } else {
                     throw new Error('Не удалось переключить статус');
                 }
             } catch (error) {
                 console.error('Ошибка переключения:', error);
-                tg.HapticFeedback.notificationOccurred('error');
-                tg.showAlert('Ошибка переключения: ' + (error.message || 'Неизвестная ошибка'));
+                try { tg.HapticFeedback.notificationOccurred('error'); } catch(e) {}
+                showMessage('Ошибка переключения: ' + (error.message || 'Неизвестная ошибка'), 'error');
             }
         }
 
         async function deleteTask(taskId, event) {
             event.stopPropagation();
             
-            tg.showConfirm('Удалить эту задачу и отключить уведомления?', async (confirmed) => {
-                if (confirmed) {
-                    try {
-                        const result = await apiCall('DELETE', `/api/tasks/${taskId}`);
-                        if (result && result.success) {
-                            await loadTasks();
-                            tg.HapticFeedback.notificationOccurred('success');
-                        } else {
-                            throw new Error('Не удалось удалить задачу');
-                        }
-                    } catch (error) {
-                        console.error('Ошибка удаления:', error);
-                        tg.HapticFeedback.notificationOccurred('error');
-                        tg.showAlert('Ошибка удаления: ' + (error.message || 'Неизвестная ошибка'));
+            const doDelete = async () => {
+                try {
+                    const result = await apiCall('DELETE', `/api/tasks/${taskId}`);
+                    if (result && result.success) {
+                        await loadTasks();
+                        try { tg.HapticFeedback.notificationOccurred('success'); } catch(e) {}
+                    } else {
+                        throw new Error('Не удалось удалить задачу');
                     }
+                } catch (error) {
+                    console.error('Ошибка удаления:', error);
+                    try { tg.HapticFeedback.notificationOccurred('error'); } catch(e) {}
+                    showMessage('Ошибка удаления: ' + (error.message || 'Неизвестная ошибка'), 'error');
                 }
-            });
+            };
+
+            try {
+                tg.showConfirm('Удалить эту задачу и отключить уведомления?', async (confirmed) => {
+                    if (confirmed) await doDelete();
+                });
+            } catch(e) {
+                if (confirm('Удалить эту задачу и отключить уведомления?')) {
+                    await doDelete();
+                }
+            }
         }
 
         async function deleteCurrentTask() {
             if (!currentTaskId) return;
 
-            tg.showConfirm('Удалить эту задачу?', async (confirmed) => {
-                if (confirmed) {
-                    try {
-                        const result = await apiCall('DELETE', `/api/tasks/${currentTaskId}`);
-                        if (result && result.success) {
-                            closeTaskModal();
-                            await loadTasks();
-                            tg.HapticFeedback.notificationOccurred('success');
-                        } else {
-                            throw new Error('Не удалось удалить задачу');
-                        }
-                    } catch (error) {
-                        console.error('Ошибка удаления:', error);
-                        tg.HapticFeedback.notificationOccurred('error');
-                        tg.showAlert('Ошибка удаления: ' + (error.message || 'Неизвестная ошибка'));
+            const doDelete = async () => {
+                try {
+                    const result = await apiCall('DELETE', `/api/tasks/${currentTaskId}`);
+                    if (result && result.success) {
+                        closeTaskModal();
+                        await loadTasks();
+                        try { tg.HapticFeedback.notificationOccurred('success'); } catch(e) {}
+                    } else {
+                        throw new Error('Не удалось удалить задачу');
                     }
+                } catch (error) {
+                    console.error('Ошибка удаления:', error);
+                    try { tg.HapticFeedback.notificationOccurred('error'); } catch(e) {}
+                    showMessage('Ошибка удаления: ' + (error.message || 'Неизвестная ошибка'), 'error');
                 }
-            });
+            };
+
+            try {
+                tg.showConfirm('Удалить эту задачу?', async (confirmed) => {
+                    if (confirmed) await doDelete();
+                });
+            } catch(e) {
+                if (confirm('Удалить эту задачу?')) {
+                    await doDelete();
+                }
+            }
         }
 
         // ==================== УТИЛИТЫ ====================
