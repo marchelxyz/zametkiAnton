@@ -68,7 +68,8 @@ class Attachment(Base):
     file_type = Column(String(50), nullable=False)  # Тип файла (image/document)
     mime_type = Column(String(100), nullable=True)  # MIME тип
     file_size = Column(Integer, nullable=True)  # Размер в байтах
-    file_data = Column(LargeBinary, nullable=True)  # Бинарные данные файла (хранение в БД)
+    file_data = Column(LargeBinary, nullable=True)  # Бинарные данные файла (хранение в БД, fallback)
+    gcs_path = Column(String(500), nullable=True)  # Путь к файлу в Google Cloud Storage
     created_at = Column(DateTime, default=moscow_now)
     
     # Связь с заметкой
@@ -94,7 +95,7 @@ def init_db():
     """Инициализация базы данных - создание таблиц"""
     Base.metadata.create_all(bind=engine)
     
-    # Миграция: добавление столбца file_data если его нет
+    # Миграция: добавление столбцов file_data и gcs_path если их нет
     try:
         from sqlalchemy import inspect, text
         inspector = inspect(engine)
@@ -110,7 +111,14 @@ def init_db():
                     else:
                         conn.execute(text("ALTER TABLE attachments ADD COLUMN file_data BLOB"))
                     conn.commit()
-                print("[DB] Миграция успешно завершена!")
+                print("[DB] Миграция file_data успешно завершена!")
+            
+            if 'gcs_path' not in columns:
+                print("[DB] Миграция: добавление столбца gcs_path...")
+                with engine.connect() as conn:
+                    conn.execute(text("ALTER TABLE attachments ADD COLUMN gcs_path VARCHAR(500)"))
+                    conn.commit()
+                print("[DB] Миграция gcs_path успешно завершена!")
     except Exception as e:
         print(f"[DB] Предупреждение при миграции: {e}")
     
@@ -320,8 +328,20 @@ def update_task_next_notification(task_id: int) -> Task:
 
 # Функции для работы с вложениями
 def create_attachment(note_id: int, filename: str, file_type: str, 
-                      file_data: bytes, mime_type: str = None, file_size: int = None) -> Attachment:
-    """Создать новое вложение с бинарными данными"""
+                      file_data: bytes = None, mime_type: str = None, 
+                      file_size: int = None, gcs_path: str = None) -> Attachment:
+    """
+    Создать новое вложение.
+    
+    Args:
+        note_id: ID заметки
+        filename: Оригинальное имя файла
+        file_type: Тип файла (image/document)
+        file_data: Бинарные данные файла (для хранения в БД, fallback)
+        mime_type: MIME тип файла
+        file_size: Размер файла в байтах
+        gcs_path: Путь к файлу в Google Cloud Storage (приоритетный)
+    """
     db = SessionLocal()
     try:
         attachment = Attachment(
@@ -331,7 +351,8 @@ def create_attachment(note_id: int, filename: str, file_type: str,
             file_type=file_type,
             mime_type=mime_type,
             file_size=file_size,
-            file_data=file_data  # Храним данные в БД
+            file_data=file_data,  # Fallback: храним данные в БД если GCS недоступен
+            gcs_path=gcs_path  # Приоритетный: путь в Google Cloud Storage
         )
         db.add(attachment)
         db.commit()
