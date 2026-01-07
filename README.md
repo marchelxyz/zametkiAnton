@@ -57,7 +57,6 @@
 ### Требования
 
 - Python 3.9+
-- PostgreSQL (или используйте SQLite для разработки)
 
 ### Установка
 
@@ -74,13 +73,25 @@ source venv/bin/activate  # Linux/Mac
 # Установите зависимости
 pip install -r requirements.txt
 
-# Создайте .env файл
+# Создайте .env файл из шаблона
 cp .env.example .env
-# Отредактируйте .env и добавьте свой BOT_TOKEN
 
 # Запустите приложение
 python app.py
 ```
+
+### Режимы работы
+
+**Режим разработки (DEBUG=true):**
+- Не требуется Telegram бот или авторизация
+- Приложение работает в браузере по адресу http://localhost:5000
+- Используется SQLite база данных (файл `notes_app.db`)
+- Все заметки и задачи сохраняются локально
+
+**Режим Production (DEBUG=false):**
+- Требуется валидный `BOT_TOKEN` от @BotFather
+- Приложение работает только через Telegram Mini App
+- Рекомендуется использовать PostgreSQL
 
 ---
 
