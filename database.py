@@ -130,6 +130,20 @@ class Task(Base):
     updated_at = Column(DateTime, default=moscow_now, onupdate=moscow_now)
 
 
+class UserSession(Base):
+    """Модель сессии пользователя для авторизации через бота"""
+    __tablename__ = "user_sessions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(BigInteger, index=True, nullable=False)  # Telegram user ID
+    session_token = Column(String(64), unique=True, nullable=False, index=True)  # Уникальный токен сессии
+    first_name = Column(String(255), nullable=True)  # Имя пользователя
+    username = Column(String(255), nullable=True)  # Username пользователя
+    created_at = Column(DateTime, default=moscow_now)
+    last_used_at = Column(DateTime, default=moscow_now)  # Когда последний раз использовалась сессия
+    is_active = Column(Boolean, default=True)  # Активна ли сессия
+
+
 def init_db():
     """Инициализация базы данных - создание таблиц"""
     engine = _get_engine()
@@ -453,5 +467,107 @@ def get_note_with_attachments(note_id: int, user_id: int):
                 db.expunge(att)
             return note, attachments
         return None, []
+    finally:
+        db.close()
+
+
+# Функции для работы с сессиями пользователей
+def create_or_update_session(user_id: int, first_name: str = None, username: str = None) -> str:
+    """
+    Создать новую сессию или обновить существующую для пользователя.
+    Возвращает session_token.
+    """
+    import secrets
+    
+    db = get_new_session()
+    try:
+        # Проверяем, есть ли активная сессия для этого пользователя
+        existing_session = db.query(UserSession).filter(
+            UserSession.user_id == user_id,
+            UserSession.is_active == True
+        ).first()
+        
+        if existing_session:
+            # Обновляем время последнего использования
+            existing_session.last_used_at = moscow_now()
+            if first_name:
+                existing_session.first_name = first_name
+            if username:
+                existing_session.username = username
+            db.commit()
+            token = existing_session.session_token
+            return token
+        
+        # Создаём новую сессию
+        session_token = secrets.token_hex(32)  # 64 символа hex
+        new_session = UserSession(
+            user_id=user_id,
+            session_token=session_token,
+            first_name=first_name,
+            username=username,
+            is_active=True
+        )
+        db.add(new_session)
+        db.commit()
+        return session_token
+    finally:
+        db.close()
+
+
+def get_user_by_session_token(session_token: str) -> dict:
+    """
+    Получить данные пользователя по токену сессии.
+    Возвращает dict с данными пользователя или None если сессия невалидна.
+    """
+    if not session_token or len(session_token) < 32:
+        return None
+    
+    db = get_new_session()
+    try:
+        session = db.query(UserSession).filter(
+            UserSession.session_token == session_token,
+            UserSession.is_active == True
+        ).first()
+        
+        if not session:
+            return None
+        
+        # Обновляем время последнего использования
+        session.last_used_at = moscow_now()
+        db.commit()
+        
+        # Возвращаем данные пользователя в формате, совместимом с Telegram initData
+        return {
+            "id": session.user_id,
+            "first_name": session.first_name or "",
+            "username": session.username or ""
+        }
+    finally:
+        db.close()
+
+
+def invalidate_user_sessions(user_id: int) -> bool:
+    """Деактивировать все сессии пользователя"""
+    db = get_new_session()
+    try:
+        db.query(UserSession).filter(
+            UserSession.user_id == user_id
+        ).update({"is_active": False})
+        db.commit()
+        return True
+    finally:
+        db.close()
+
+
+def cleanup_old_sessions(days: int = 30) -> int:
+    """Удалить старые неактивные сессии. Возвращает количество удалённых."""
+    db = get_new_session()
+    try:
+        cutoff_date = moscow_now() - timedelta(days=days)
+        count = db.query(UserSession).filter(
+            UserSession.last_used_at < cutoff_date
+        ).delete()
+        db.commit()
+        return count
     finally:
         db.close()

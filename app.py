@@ -21,7 +21,8 @@ from database import (
     create_task, get_tasks_by_user, get_task_by_id, update_task, delete_task,
     get_tasks_due_for_notification, update_task_next_notification,
     create_attachment, get_attachments_by_note, get_attachment_by_id, delete_attachment,
-    get_note_with_attachments
+    get_note_with_attachments,
+    create_or_update_session, get_user_by_session_token
 )
 from storage import (
     is_gcs_available, generate_gcs_path, upload_to_gcs, download_from_gcs, delete_from_gcs
@@ -200,14 +201,16 @@ def verify_telegram_hash(bot_token: str, data_check_string: str, received_hash: 
     return hmac.compare_digest(calculated_hash, received_hash)
 
 
-def verify_telegram_data(init_data: str) -> dict:
+def verify_telegram_data(init_data: str, session_token: str = None) -> dict:
     """
     Проверка данных от Telegram Mini App.
     Возвращает данные пользователя если валидация успешна.
     
-    Поддерживает два формата:
-    1. Новый формат (Bot API 6.7+) с signature (Ed25519)
-    2. Старый формат с hash (HMAC-SHA256)
+    Поддерживает несколько способов авторизации (в порядке приоритета):
+    1. Session token (авторизация через бота) - самый надёжный способ
+    2. Новый формат Telegram (Bot API 6.7+) с signature (Ed25519)
+    3. Старый формат Telegram с hash (HMAC-SHA256)
+    4. DEBUG режим - без проверки подписи
     
     ВАЖНО: init_data от Telegram приходит в URL-encoded формате,
     поэтому значения нужно декодировать перед проверкой подписи.
@@ -234,6 +237,17 @@ def verify_telegram_data(init_data: str) -> dict:
         except Exception as e:
             print(f"[AUTH] Ошибка извлечения user из init_data: {e}")
         return None
+    
+    # ========== ПРИОРИТЕТ 1: Session Token (авторизация через бота) ==========
+    if session_token:
+        user = get_user_by_session_token(session_token)
+        if user:
+            print(f"[AUTH] ✓ Авторизация через session_token для user_id={user.get('id')}")
+            return user
+        else:
+            print(f"[AUTH] ✗ Session token невалиден или устарел")
+    
+    # ========== ПРИОРИТЕТ 2: initData от Telegram ==========
     
     # В режиме отладки - пробуем извлечь user данные без верификации
     if debug_mode:
@@ -366,27 +380,91 @@ def verify_telegram_data(init_data: str) -> dict:
         return None
 
 
+def get_auth_headers():
+    """Получить данные авторизации из заголовков запроса"""
+    init_data = request.headers.get('X-Telegram-Init-Data', '')
+    session_token = request.headers.get('X-Session-Token', '')
+    return init_data, session_token
+
+
+def authenticate_user():
+    """
+    Аутентификация пользователя из запроса.
+    Возвращает данные пользователя или None.
+    """
+    init_data, session_token = get_auth_headers()
+    return verify_telegram_data(init_data, session_token)
+
+
 @app.route('/')
 def index():
     """Главная страница Mini App"""
     return render_template('index.html')
 
 
+@app.route('/api/auth/session', methods=['POST'])
+def api_create_session():
+    """
+    Создать или обновить сессию авторизации.
+    
+    Используется для получения session_token при первом успешном входе.
+    После этого session_token можно использовать для авторизации вместо initData.
+    
+    Это решает проблему устаревания initData и ошибок верификации подписи.
+    """
+    init_data = request.headers.get('X-Telegram-Init-Data', '')
+    
+    # Пробуем верифицировать через initData
+    user = verify_telegram_data(init_data, None)
+    
+    if not user:
+        return jsonify({
+            "error": "Unauthorized",
+            "message": "Не удалось авторизоваться. Пожалуйста, откройте приложение через Telegram."
+        }), 401
+    
+    user_id = user.get('id')
+    first_name = user.get('first_name', '')
+    username = user.get('username', '')
+    
+    try:
+        # Создаём или обновляем сессию
+        session_token = create_or_update_session(user_id, first_name, username)
+        
+        print(f"[AUTH] Сессия создана/обновлена для user_id={user_id}")
+        
+        return jsonify({
+            "success": True,
+            "session_token": session_token,
+            "user": {
+                "id": user_id,
+                "first_name": first_name,
+                "username": username
+            }
+        })
+    except Exception as e:
+        print(f"[AUTH] Ошибка создания сессии: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": "Failed to create session"}), 500
+
+
 @app.route('/api/notes', methods=['GET'])
 def api_get_notes():
     """Получить все заметки пользователя"""
-    init_data = request.headers.get('X-Telegram-Init-Data', '')
-    user = verify_telegram_data(init_data)
+    user = authenticate_user()
     
     if not user:
+        init_data, session_token = get_auth_headers()
         # Возвращаем более детальную информацию об ошибке
         error_details = {
             "error": "Unauthorized",
             "message": "Ошибка авторизации. Пожалуйста, перезапустите приложение через Telegram.",
             "init_data_received": bool(init_data),
-            "init_data_length": len(init_data) if init_data else 0
+            "session_token_received": bool(session_token),
+            "need_reauth": True
         }
-        print(f"[API] /api/notes GET - Ошибка авторизации, init_data длина: {len(init_data) if init_data else 0}")
+        print(f"[API] /api/notes GET - Ошибка авторизации")
         return jsonify(error_details), 401
     
     user_id = user.get('id')
@@ -418,12 +496,11 @@ def api_get_notes():
 @app.route('/api/notes', methods=['POST'])
 def api_create_note():
     """Создать новую заметку"""
-    init_data = request.headers.get('X-Telegram-Init-Data', '')
-    user = verify_telegram_data(init_data)
+    user = authenticate_user()
     
     if not user:
         print("[API] /api/notes POST - Ошибка авторизации")
-        return jsonify({"error": "Unauthorized"}), 401
+        return jsonify({"error": "Unauthorized", "need_reauth": True}), 401
     
     data = request.get_json()
     if not data:
@@ -460,11 +537,10 @@ def api_create_note():
 @app.route('/api/notes/<int:note_id>', methods=['GET'])
 def api_get_note(note_id):
     """Получить заметку по ID"""
-    init_data = request.headers.get('X-Telegram-Init-Data', '')
-    user = verify_telegram_data(init_data)
+    user = authenticate_user()
     
     if not user:
-        return jsonify({"error": "Unauthorized"}), 401
+        return jsonify({"error": "Unauthorized", "need_reauth": True}), 401
     
     user_id = user.get('id')
     note, attachments = get_note_with_attachments(note_id, user_id)
@@ -493,11 +569,10 @@ def api_get_note(note_id):
 @app.route('/api/notes/<int:note_id>', methods=['PUT'])
 def api_update_note(note_id):
     """Обновить заметку"""
-    init_data = request.headers.get('X-Telegram-Init-Data', '')
-    user = verify_telegram_data(init_data)
+    user = authenticate_user()
     
     if not user:
-        return jsonify({"error": "Unauthorized"}), 401
+        return jsonify({"error": "Unauthorized", "need_reauth": True}), 401
     
     data = request.get_json()
     title = data.get('title')
@@ -520,11 +595,10 @@ def api_update_note(note_id):
 @app.route('/api/notes/<int:note_id>', methods=['DELETE'])
 def api_delete_note(note_id):
     """Удалить заметку"""
-    init_data = request.headers.get('X-Telegram-Init-Data', '')
-    user = verify_telegram_data(init_data)
+    user = authenticate_user()
     
     if not user:
-        return jsonify({"error": "Unauthorized"}), 401
+        return jsonify({"error": "Unauthorized", "need_reauth": True}), 401
     
     user_id = user.get('id')
     
@@ -542,11 +616,10 @@ def api_delete_note(note_id):
 @app.route('/api/notes/<int:note_id>/attachments', methods=['POST'])
 def api_upload_attachment(note_id):
     """Загрузить вложение к заметке (в Google Cloud Storage или БД как fallback)"""
-    init_data = request.headers.get('X-Telegram-Init-Data', '')
-    user = verify_telegram_data(init_data)
+    user = authenticate_user()
     
     if not user:
-        return jsonify({"error": "Unauthorized"}), 401
+        return jsonify({"error": "Unauthorized", "need_reauth": True}), 401
     
     user_id = user.get('id')
     
@@ -628,11 +701,10 @@ def api_upload_attachment(note_id):
 @app.route('/api/attachments/<int:attachment_id>', methods=['GET'])
 def api_get_attachment(attachment_id):
     """Скачать вложение (из Google Cloud Storage или БД)"""
-    init_data = request.headers.get('X-Telegram-Init-Data', '')
-    user = verify_telegram_data(init_data)
+    user = authenticate_user()
     
     if not user:
-        return jsonify({"error": "Unauthorized"}), 401
+        return jsonify({"error": "Unauthorized", "need_reauth": True}), 401
     
     user_id = user.get('id')
     
@@ -681,11 +753,10 @@ def api_get_attachment(attachment_id):
 @app.route('/api/attachments/<int:attachment_id>', methods=['DELETE'])
 def api_delete_attachment(attachment_id):
     """Удалить вложение (из Google Cloud Storage и БД)"""
-    init_data = request.headers.get('X-Telegram-Init-Data', '')
-    user = verify_telegram_data(init_data)
+    user = authenticate_user()
     
     if not user:
-        return jsonify({"error": "Unauthorized"}), 401
+        return jsonify({"error": "Unauthorized", "need_reauth": True}), 401
     
     user_id = user.get('id')
     
@@ -726,7 +797,7 @@ def health():
 @app.route('/api/debug/auth', methods=['GET'])
 def debug_auth():
     """Диагностика авторизации (только для отладки)"""
-    init_data = request.headers.get('X-Telegram-Init-Data', '')
+    init_data, session_token = get_auth_headers()
     
     debug_info = {
         "init_data_present": bool(init_data),
@@ -734,6 +805,8 @@ def debug_auth():
         "init_data_has_equals": '=' in init_data if init_data else False,
         "init_data_has_hash": 'hash=' in init_data if init_data else False,
         "init_data_has_user": 'user=' in init_data if init_data else False,
+        "session_token_present": bool(session_token),
+        "session_token_length": len(session_token) if session_token else 0,
         "bot_token_configured": bool(BOT_TOKEN),
         "bot_token_length": len(BOT_TOKEN) if BOT_TOKEN else 0,
         "debug_mode": os.getenv("DEBUG", "false").lower() == "true"
@@ -784,9 +857,10 @@ def debug_auth():
     if os.getenv("DEBUG", "false").lower() == "true":
         debug_info["init_data_preview"] = init_data[:200] if init_data else None
     
-    # Пробуем верифицировать
-    user = verify_telegram_data(init_data)
+    # Пробуем верифицировать (с session_token если есть)
+    user = verify_telegram_data(init_data, session_token)
     debug_info["verification_success"] = user is not None
+    debug_info["auth_method"] = "session_token" if (session_token and user) else ("init_data" if user else "none")
     
     if user:
         debug_info["verified_user"] = {
@@ -805,11 +879,10 @@ def debug_auth():
 @app.route('/api/tasks', methods=['GET'])
 def api_get_tasks():
     """Получить все задачи пользователя"""
-    init_data = request.headers.get('X-Telegram-Init-Data', '')
-    user = verify_telegram_data(init_data)
+    user = authenticate_user()
     
     if not user:
-        return jsonify({"error": "Unauthorized"}), 401
+        return jsonify({"error": "Unauthorized", "need_reauth": True}), 401
     
     user_id = user.get('id')
     active_only = request.args.get('active_only', 'true').lower() == 'true'
@@ -835,12 +908,11 @@ def api_get_tasks():
 @app.route('/api/tasks', methods=['POST'])
 def api_create_task():
     """Создать новую задачу"""
-    init_data = request.headers.get('X-Telegram-Init-Data', '')
-    user = verify_telegram_data(init_data)
+    user = authenticate_user()
     
     if not user:
         print("[API] /api/tasks POST - Ошибка авторизации")
-        return jsonify({"error": "Unauthorized"}), 401
+        return jsonify({"error": "Unauthorized", "need_reauth": True}), 401
     
     data = request.get_json()
     if not data:
@@ -917,11 +989,10 @@ def format_interval(minutes: int) -> str:
 @app.route('/api/tasks/<int:task_id>', methods=['GET'])
 def api_get_task(task_id):
     """Получить задачу по ID"""
-    init_data = request.headers.get('X-Telegram-Init-Data', '')
-    user = verify_telegram_data(init_data)
+    user = authenticate_user()
     
     if not user:
-        return jsonify({"error": "Unauthorized"}), 401
+        return jsonify({"error": "Unauthorized", "need_reauth": True}), 401
     
     user_id = user.get('id')
     task = get_task_by_id(task_id, user_id)
@@ -944,11 +1015,10 @@ def api_get_task(task_id):
 @app.route('/api/tasks/<int:task_id>', methods=['PUT'])
 def api_update_task(task_id):
     """Обновить задачу"""
-    init_data = request.headers.get('X-Telegram-Init-Data', '')
-    user = verify_telegram_data(init_data)
+    user = authenticate_user()
     
     if not user:
-        return jsonify({"error": "Unauthorized"}), 401
+        return jsonify({"error": "Unauthorized", "need_reauth": True}), 401
     
     data = request.get_json()
     title = data.get('title')
@@ -987,11 +1057,10 @@ def api_update_task(task_id):
 @app.route('/api/tasks/<int:task_id>', methods=['DELETE'])
 def api_delete_task(task_id):
     """Удалить задачу"""
-    init_data = request.headers.get('X-Telegram-Init-Data', '')
-    user = verify_telegram_data(init_data)
+    user = authenticate_user()
     
     if not user:
-        return jsonify({"error": "Unauthorized"}), 401
+        return jsonify({"error": "Unauthorized", "need_reauth": True}), 401
     
     user_id = user.get('id')
     
@@ -1013,11 +1082,10 @@ def api_delete_task(task_id):
 @app.route('/api/tasks/<int:task_id>/toggle', methods=['POST'])
 def api_toggle_task(task_id):
     """Включить/выключить уведомления для задачи"""
-    init_data = request.headers.get('X-Telegram-Init-Data', '')
-    user = verify_telegram_data(init_data)
+    user = authenticate_user()
     
     if not user:
-        return jsonify({"error": "Unauthorized"}), 401
+        return jsonify({"error": "Unauthorized", "need_reauth": True}), 401
     
     user_id = user.get('id')
     task = get_task_by_id(task_id, user_id)
