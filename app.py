@@ -215,12 +215,39 @@ def verify_telegram_data(init_data: str) -> dict:
     # Режим отладки для тестирования вне Telegram
     debug_mode = os.getenv("DEBUG", "false").lower() == "true"
     
-    # В режиме отладки или без BOT_TOKEN - работаем с тестовыми данными
-    if not BOT_TOKEN or debug_mode:
-        if not BOT_TOKEN:
-            print("[DEBUG] BOT_TOKEN не задан, используем тестовые данные")
+    # Вспомогательная функция для извлечения user данных из init_data без верификации
+    def extract_user_from_init_data(init_data_str: str) -> dict:
+        """Извлечь данные пользователя из init_data без проверки подписи"""
+        if not init_data_str or '=' not in init_data_str:
+            return None
+        try:
+            parsed = {}
+            for pair in init_data_str.split('&'):
+                if '=' in pair:
+                    key, value = pair.split('=', 1)
+                    parsed[key] = unquote(value)
+            
+            if 'user' in parsed:
+                user_data = json.loads(parsed['user'])
+                if user_data.get('id'):
+                    return user_data
+        except Exception as e:
+            print(f"[AUTH] Ошибка извлечения user из init_data: {e}")
+        return None
+    
+    # В режиме отладки - пробуем извлечь user данные без верификации
+    if debug_mode:
+        user_data = extract_user_from_init_data(init_data)
+        if user_data:
+            print(f"[DEBUG] DEBUG режим: используем данные из init_data без верификации для user_id={user_data.get('id')}")
+            return user_data
         else:
-            print("[DEBUG] DEBUG режим включен, используем тестовые данные")
+            print("[DEBUG] DEBUG режим: init_data пустая или некорректная, используем тестовые данные")
+            return {"id": 123456789, "first_name": "Test", "username": "testuser"}
+    
+    # Без BOT_TOKEN - работаем с тестовыми данными
+    if not BOT_TOKEN:
+        print("[DEBUG] BOT_TOKEN не задан, используем тестовые данные")
         return {"id": 123456789, "first_name": "Test", "username": "testuser"}
     
     # Проверяем, что init_data не пустая и содержит корректный формат
