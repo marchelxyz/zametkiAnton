@@ -732,15 +732,22 @@
         let currentTaskId = null;
         let currentTab = 'notes';
         let isInTelegram = false;
+        let isWebMode = false;  // Режим работы в браузере без Telegram
         let currentAttachments = [];
         let cachedInitData = null;  // Кешируем initData при первом получении
         let sessionToken = null;    // Токен сессии для авторизации через бота
+        let webAccessToken = null;  // Токен для веб-версии (без Telegram)
         
-        // Загружаем session_token и cached initData из localStorage при старте
+        // Загружаем токены из localStorage при старте
         try {
             sessionToken = localStorage.getItem('session_token');
             if (sessionToken) {
                 console.log('[AUTH] Загружен session_token из localStorage');
+            }
+            
+            webAccessToken = localStorage.getItem('web_access_token');
+            if (webAccessToken) {
+                console.log('[AUTH] Загружен web_access_token из localStorage');
             }
             
             // Загружаем закешированную initData
@@ -765,13 +772,35 @@
             }
         }
         
+        // Сохранить web access token
+        function saveWebAccessToken(token) {
+            webAccessToken = token;
+            try {
+                localStorage.setItem('web_access_token', token);
+                console.log('[AUTH] web_access_token сохранён в localStorage');
+            } catch (e) {
+                console.warn('[AUTH] Не удалось сохранить web_access_token:', e);
+            }
+        }
+        
+        // Очистить web access token
+        function clearWebAccessToken() {
+            webAccessToken = null;
+            try {
+                localStorage.removeItem('web_access_token');
+            } catch (e) {}
+        }
+        
         // Очистить все данные авторизации (для принудительного выхода)
         function clearAllAuthData() {
             sessionToken = null;
             cachedInitData = null;
+            webAccessToken = null;
+            isWebMode = false;
             try {
                 localStorage.removeItem('session_token');
                 localStorage.removeItem('cached_init_data');
+                localStorage.removeItem('web_access_token');
                 console.log('[AUTH] Все данные авторизации очищены');
             } catch (e) {}
         }
@@ -894,8 +923,8 @@
                         <button class="btn btn-secondary" onclick="resetAndReload()" style="margin-bottom: 8px; width: 100%;">
                             🗑 Сбросить и перезагрузить
                         </button>
-                        <button class="btn btn-secondary" onclick="tryLoadAnyway()" style="width: 100%;">
-                            Попробовать всё равно
+                        <button class="btn btn-secondary" onclick="enterWebMode()" style="width: 100%;">
+                            🌐 Войти в веб-версию
                         </button>
                         <div style="font-size: 11px; color: var(--tg-theme-hint-color); margin-top: 12px;">
                             Telegram v${tg.version || '?'} • ${tg.platform || 'unknown'}
@@ -903,25 +932,83 @@
                     </div>
                 `;
             } else {
-                // Приложение открыто вне Telegram
+                // Приложение открыто вне Telegram - предлагаем веб-версию
                 warningHtml = `
                     <div style="text-align: center; padding: 40px 20px;">
-                        <div style="font-size: 48px; margin-bottom: 16px;">⚠️</div>
+                        <div style="font-size: 48px; margin-bottom: 16px;">🌐</div>
                         <div style="font-size: 16px; color: var(--tg-theme-text-color); margin-bottom: 12px;">
-                            <b>Откройте в Telegram</b>
+                            <b>Заметки и Задачи</b>
                         </div>
-                        <div style="font-size: 14px; color: var(--tg-theme-hint-color);">
-                            Это приложение работает только<br>как Telegram Mini App.<br><br>
-                            Откройте бота и запустите<br>приложение через меню.
+                        <div style="font-size: 14px; color: var(--tg-theme-hint-color); margin-bottom: 20px;">
+                            Вы открыли приложение в браузере.<br><br>
+                            Выберите способ входа:
                         </div>
-                        <button class="btn btn-secondary" onclick="tryLoadAnyway()" style="margin-top: 16px; width: 100%;">
-                            Попробовать всё равно
+                        <button class="btn btn-primary" onclick="enterWebMode()" style="margin-bottom: 12px; width: 100%;">
+                            🌐 Войти в веб-версию
                         </button>
+                        <div style="font-size: 12px; color: var(--tg-theme-hint-color); margin-bottom: 20px;">
+                            Ваши данные будут храниться отдельно<br>от Telegram-аккаунта
+                        </div>
+                        <div style="border-top: 1px solid var(--tg-theme-secondary-bg-color); padding-top: 16px; margin-top: 8px;">
+                            <div style="font-size: 13px; color: var(--tg-theme-hint-color); margin-bottom: 8px;">
+                                Или откройте через Telegram:
+                            </div>
+                            <div style="font-size: 12px; color: var(--tg-theme-hint-color);">
+                                Найдите бота и запустите<br>приложение через меню
+                            </div>
+                        </div>
                     </div>
                 `;
             }
             
             notesLoading.innerHTML = warningHtml;
+        }
+        
+        // Войти в веб-режим
+        async function enterWebMode() {
+            const notesLoading = document.getElementById('notes-loading');
+            notesLoading.innerHTML = '<div style="text-align: center; padding: 40px;">🔄 Вход в веб-версию...</div>';
+            
+            try {
+                const success = await createWebAuthSession();
+                if (success) {
+                    isWebMode = true;
+                    console.log('[WEB] Вход в веб-режим успешен');
+                    
+                    // Обновляем заголовок чтобы показать веб-режим
+                    document.getElementById('page-title').innerHTML = '📝 Заметки <span style="font-size: 12px; opacity: 0.7;">(веб)</span>';
+                    
+                    // Загружаем данные
+                    await loadNotes();
+                } else {
+                    showWebModeError('Не удалось войти в веб-версию');
+                }
+            } catch (error) {
+                console.error('[WEB] Ошибка входа в веб-режим:', error);
+                showWebModeError(error.message || 'Неизвестная ошибка');
+            }
+        }
+        
+        // Показать ошибку веб-режима
+        function showWebModeError(message) {
+            const notesLoading = document.getElementById('notes-loading');
+            notesLoading.innerHTML = `
+                <div style="text-align: center; padding: 40px 20px;">
+                    <div style="font-size: 48px; margin-bottom: 16px;">❌</div>
+                    <div style="font-size: 16px; color: var(--tg-theme-text-color); margin-bottom: 12px;">
+                        <b>Ошибка</b>
+                    </div>
+                    <div style="font-size: 14px; color: var(--tg-theme-hint-color); margin-bottom: 16px;">
+                        ${escapeHtml(message)}
+                    </div>
+                    <button class="btn btn-primary" onclick="enterWebMode()" style="margin-bottom: 8px; width: 100%;">
+                        🔄 Попробовать снова
+                    </button>
+                    <button class="btn btn-secondary" onclick="showNotInTelegramWarning()" style="width: 100%;">
+                        ← Назад
+                    </button>
+                </div>
+            `;
         }
         
         // Сбросить данные авторизации и перезагрузить
@@ -1053,24 +1140,94 @@
             }
         }
         
-        // API вызовы с поддержкой session_token
+        // Создать веб-сессию авторизации (для работы без Telegram)
+        async function createWebAuthSession(userName = null) {
+            try {
+                console.log('[AUTH] Создаём веб-сессию авторизации...');
+                
+                const body = {};
+                if (userName) {
+                    body.name = userName;
+                }
+                
+                const response = await fetch('/api/auth/web', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(body)
+                });
+                
+                let result;
+                try {
+                    result = await response.json();
+                } catch (e) {
+                    console.error('[AUTH] Ошибка парсинга ответа:', e);
+                    return false;
+                }
+                
+                if (response.ok && result.access_token) {
+                    saveWebAccessToken(result.access_token);
+                    isWebMode = true;
+                    console.log('[AUTH] ✓ Веб-сессия создана успешно, user:', result.user?.id, result.is_new ? '(новый)' : '(существующий)');
+                    return true;
+                } else {
+                    console.error('[AUTH] ✗ Не удалось создать веб-сессию:', result.error);
+                    return false;
+                }
+            } catch (error) {
+                console.error('[AUTH] ✗ Ошибка создания веб-сессии:', error);
+                return false;
+            }
+        }
+        
+        // Проверить валидность веб-токена
+        async function checkWebAccessToken() {
+            if (!webAccessToken) return false;
+            
+            try {
+                const response = await fetch('/api/auth/web/check', {
+                    method: 'GET',
+                    headers: {
+                        'X-Web-Access-Token': webAccessToken
+                    }
+                });
+                
+                const result = await response.json();
+                return result.valid === true;
+            } catch (e) {
+                console.error('[AUTH] Ошибка проверки веб-токена:', e);
+                return false;
+            }
+        }
+        
+        // API вызовы с поддержкой всех методов авторизации
         async function apiCall(method, endpoint, data = null, retryAfterReauth = true) {
             const initData = getInitData();
             
-            // Создаём заголовки с обоими методами авторизации
+            // Создаём заголовки с методами авторизации
             const headers = {
-                'Content-Type': 'application/json',
-                'X-Telegram-Init-Data': initData || ''
+                'Content-Type': 'application/json'
             };
             
-            // Добавляем session_token если есть
+            // Приоритет 1: Web Access Token (для веб-версии)
+            if (webAccessToken) {
+                headers['X-Web-Access-Token'] = webAccessToken;
+            }
+            
+            // Приоритет 2: Session Token (Telegram)
             if (sessionToken) {
                 headers['X-Session-Token'] = sessionToken;
             }
             
-            // Предупреждение если нет ни initData, ни session_token
-            if (!initData && !sessionToken) {
-                console.warn('[API] ВНИМАНИЕ: Нет ни initData, ни session_token');
+            // Приоритет 3: Telegram initData
+            if (initData) {
+                headers['X-Telegram-Init-Data'] = initData;
+            }
+            
+            // Предупреждение если нет ни одного метода авторизации
+            if (!initData && !sessionToken && !webAccessToken) {
+                console.warn('[API] ВНИМАНИЕ: Нет ни одного метода авторизации');
             }
             
             const options = {
@@ -1084,7 +1241,8 @@
 
             console.log('[API]', method, endpoint, 
                         'initData:', initData ? initData.length + 'b' : 'нет', 
-                        'session:', sessionToken ? 'есть' : 'нет');
+                        'session:', sessionToken ? 'есть' : 'нет',
+                        'web:', webAccessToken ? 'есть' : 'нет');
             
             let response;
             let result;
@@ -1115,32 +1273,43 @@
                     if (retryAfterReauth) {
                         console.log('[API] Пробуем переавторизоваться...');
                         
-                        // Очищаем старый session_token
-                        clearSessionToken();
-                        
-                        // Пробуем извлечь свежую initData
-                        const freshInitData = extractInitData();
-                        
-                        if (freshInitData) {
-                            console.log('[API] Есть initData, создаём новую сессию...');
-                            const reauthSuccess = await createAuthSession();
-                            if (reauthSuccess) {
-                                console.log('[API] Переавторизация успешна, повторяем запрос...');
-                                // Повторяем запрос с новым токеном (без повторной переавторизации)
+                        // Если в веб-режиме - пробуем веб-авторизацию
+                        if (isWebMode) {
+                            console.log('[API] Веб-режим: пробуем веб-авторизацию...');
+                            clearWebAccessToken();
+                            const webAuthSuccess = await createWebAuthSession();
+                            if (webAuthSuccess) {
+                                console.log('[API] Веб-авторизация успешна, повторяем запрос...');
                                 return apiCall(method, endpoint, data, false);
-                            } else {
-                                console.error('[API] Переавторизация не удалась');
-                                // Очищаем все данные авторизации, чтобы при следующем запуске был чистый старт
-                                clearAllAuthData();
                             }
                         } else {
-                            console.error('[API] Нет initData для переавторизации');
-                            // Очищаем все данные, чтобы при перезапуске был чистый старт
-                            clearAllAuthData();
+                            // Telegram режим
+                            clearSessionToken();
+                            
+                            const freshInitData = extractInitData();
+                            
+                            if (freshInitData) {
+                                console.log('[API] Есть initData, создаём новую сессию...');
+                                const reauthSuccess = await createAuthSession();
+                                if (reauthSuccess) {
+                                    console.log('[API] Переавторизация успешна, повторяем запрос...');
+                                    return apiCall(method, endpoint, data, false);
+                                } else {
+                                    console.error('[API] Переавторизация не удалась');
+                                    clearAllAuthData();
+                                }
+                            } else {
+                                console.error('[API] Нет initData для переавторизации');
+                                clearAllAuthData();
+                            }
                         }
                     }
                     
-                    errorMessage = 'Ошибка авторизации. Пожалуйста, закройте и заново откройте приложение через Telegram.';
+                    if (isWebMode) {
+                        errorMessage = 'Ошибка авторизации. Попробуйте перезагрузить страницу.';
+                    } else {
+                        errorMessage = 'Ошибка авторизации. Пожалуйста, закройте и заново откройте приложение через Telegram.';
+                    }
                 }
                 
                 throw new Error(errorMessage);
@@ -1162,14 +1331,16 @@
             document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
             document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
             
+            const webSuffix = isWebMode ? ' <span style="font-size: 12px; opacity: 0.7;">(веб)</span>' : '';
+            
             if (tab === 'notes') {
                 document.querySelector('.tab:first-child').classList.add('active');
                 document.getElementById('notes-tab').classList.add('active');
-                document.getElementById('page-title').textContent = '📝 Заметки';
+                document.getElementById('page-title').innerHTML = '📝 Заметки' + webSuffix;
             } else {
                 document.querySelector('.tab:last-child').classList.add('active');
                 document.getElementById('tasks-tab').classList.add('active');
-                document.getElementById('page-title').textContent = '⏰ Задачи';
+                document.getElementById('page-title').innerHTML = '⏰ Задачи' + webSuffix;
                 loadTasks();
             }
         }
@@ -1441,16 +1612,25 @@
             
             const initData = getInitData();
             
-            // Создаём заголовки с обоими методами авторизации
-            const headers = {
-                'X-Telegram-Init-Data': initData || ''
-            };
+            // Создаём заголовки с методами авторизации
+            const headers = {};
             
+            // Приоритет 1: Web Access Token
+            if (webAccessToken) {
+                headers['X-Web-Access-Token'] = webAccessToken;
+            }
+            
+            // Приоритет 2: Session Token
             if (sessionToken) {
                 headers['X-Session-Token'] = sessionToken;
             }
             
-            if (!initData && !sessionToken) {
+            // Приоритет 3: Telegram initData
+            if (initData) {
+                headers['X-Telegram-Init-Data'] = initData;
+            }
+            
+            if (!initData && !sessionToken && !webAccessToken) {
                 throw new Error('Ошибка авторизации');
             }
             
@@ -1508,12 +1688,17 @@
                 try {
                     const initData = getInitData();
                     
-                    // Создаём заголовки с обоими методами авторизации
-                    const headers = {
-                        'X-Telegram-Init-Data': initData || ''
-                    };
+                    // Создаём заголовки с методами авторизации
+                    const headers = {};
+                    
+                    if (webAccessToken) {
+                        headers['X-Web-Access-Token'] = webAccessToken;
+                    }
                     if (sessionToken) {
                         headers['X-Session-Token'] = sessionToken;
+                    }
+                    if (initData) {
+                        headers['X-Telegram-Init-Data'] = initData;
                     }
                     
                     const response = await fetch(`/api/attachments/${attachmentId}`, {
@@ -1971,18 +2156,35 @@
             initAttempts++;
             console.log(`[INIT] Попытка инициализации ${initAttempts}/${MAX_INIT_ATTEMPTS}`);
             console.log(`[INIT] session_token: ${sessionToken ? 'есть' : 'нет'}`);
+            console.log(`[INIT] web_access_token: ${webAccessToken ? 'есть' : 'нет'}`);
             console.log(`[INIT] cached_init_data: ${cachedInitData ? cachedInitData.length + 'b' : 'нет'}`);
+            
+            // Приоритет 1: Веб-токен (если был сохранён ранее)
+            if (webAccessToken) {
+                console.log('[INIT] Есть web_access_token, проверяем...');
+                const webTokenValid = await checkWebAccessToken();
+                if (webTokenValid) {
+                    console.log('[INIT] Веб-токен валиден, входим в веб-режим');
+                    isWebMode = true;
+                    document.getElementById('page-title').innerHTML = '📝 Заметки <span style="font-size: 12px; opacity: 0.7;">(веб)</span>';
+                    await loadNotes();
+                    return;
+                } else {
+                    console.log('[INIT] Веб-токен невалиден, очищаем...');
+                    clearWebAccessToken();
+                }
+            }
             
             const inTelegram = checkTelegramEnvironment();
             
-            // Если есть session_token - пробуем работать с ним
+            // Приоритет 2: Session token (Telegram)
             if (sessionToken) {
                 console.log('[INIT] Есть session_token, пробуем загрузить данные...');
                 await loadNotesWithAuth();
                 return;
             }
             
-            // Есть свежая initData от Telegram SDK - создаём сессию
+            // Приоритет 3: Есть свежая initData от Telegram SDK - создаём сессию
             if (inTelegram && (tg.initData || cachedInitData)) {
                 console.log('[INIT] Успешная инициализация в Telegram');
                 // Создаём сессию для надёжной авторизации
@@ -2002,10 +2204,9 @@
                 return;
             }
             
-            // Исчерпаны все попытки - но всё равно пробуем загрузить данные
-            // (на случай если сервер работает в DEBUG режиме)
-            console.warn('[INIT] initData не доступна, пробуем загрузить данные...');
-            tryLoadWithoutVerification();
+            // Исчерпаны все попытки - показываем выбор входа (Telegram или веб)
+            console.warn('[INIT] Ни один метод авторизации не доступен, показываем выбор...');
+            showNotInTelegramWarning();
         }
         
         // Загрузка заметок с автоматической авторизацией
@@ -2062,7 +2263,7 @@
                 console.error('[INIT] Ошибка при попытке загрузки:', error.message);
             }
             
-            // Если ничего не помогло - показываем предупреждение
+            // Если ничего не помогло - показываем выбор входа (веб или Telegram)
             showNotInTelegramWarning();
         }
 
