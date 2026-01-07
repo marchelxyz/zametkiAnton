@@ -128,23 +128,23 @@ def verify_telegram_data(init_data: str) -> dict:
     # Режим отладки для тестирования вне Telegram
     debug_mode = os.getenv("DEBUG", "false").lower() == "true"
     
-    if not BOT_TOKEN:
-        # В режиме разработки без токена возвращаем тестовые данные
-        print("[DEBUG] BOT_TOKEN не задан, используем тестовые данные")
+    # В режиме отладки или без BOT_TOKEN - работаем с тестовыми данными
+    if not BOT_TOKEN or debug_mode:
+        if not BOT_TOKEN:
+            print("[DEBUG] BOT_TOKEN не задан, используем тестовые данные")
+        else:
+            print("[DEBUG] DEBUG режим включен, используем тестовые данные")
         return {"id": 123456789, "first_name": "Test", "username": "testuser"}
     
     # Проверяем, что init_data не пустая и содержит корректный формат
     if not init_data or '=' not in init_data:
-        if debug_mode:
-            # В режиме отладки возвращаем тестовые данные
-            print(f"[DEBUG] init_data пустая, используем тестовые данные (DEBUG режим)")
-            return {"id": 123456789, "first_name": "Debug", "username": "debuguser"}
         # Более информативное логирование
         init_data_preview = init_data[:50] if init_data else "(пустая)"
         print(f"Ошибка верификации: init_data пустая или некорректная")
         print(f"  - init_data длина: {len(init_data) if init_data else 0}")
         print(f"  - init_data превью: {init_data_preview}")
         print(f"  - Убедитесь, что приложение открыто через Telegram Mini App")
+        print(f"  - Или включите DEBUG=true для работы без Telegram")
         return None
     
     try:
@@ -162,8 +162,6 @@ def verify_telegram_data(init_data: str) -> dict:
         
         if not received_hash:
             print("Ошибка верификации: hash отсутствует в init_data")
-            if debug_mode:
-                return {"id": 123456789, "first_name": "Debug", "username": "debuguser"}
             return None
         
         # Сортируем по ключу и создаём строку для проверки подписи
@@ -189,28 +187,16 @@ def verify_telegram_data(init_data: str) -> dict:
             print(f"Ошибка верификации: hash не совпадает")
             print(f"  - Получен: {received_hash[:20]}...")
             print(f"  - Вычислен: {calculated_hash[:20]}...")
-            if debug_mode:
-                # В режиме отладки всё равно возвращаем данные пользователя
-                user_json = parsed_data.get('user', '{}')
-                try:
-                    user_data = json.loads(user_json)
-                    print(f"[DEBUG] Возвращаем данные пользователя несмотря на ошибку hash")
-                    return user_data
-                except:
-                    return {"id": 123456789, "first_name": "Debug", "username": "debuguser"}
+            print(f"  - Проверьте, что BOT_TOKEN совпадает с токеном бота в Telegram")
             return None
             
     except json.JSONDecodeError as e:
         print(f"Ошибка верификации: некорректный JSON в user data: {e}")
-        if debug_mode:
-            return {"id": 123456789, "first_name": "Debug", "username": "debuguser"}
         return None
     except Exception as e:
         print(f"Ошибка верификации: {e}")
         import traceback
         traceback.print_exc()
-        if debug_mode:
-            return {"id": 123456789, "first_name": "Debug", "username": "debuguser"}
         return None
 
 
