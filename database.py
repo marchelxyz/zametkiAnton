@@ -26,20 +26,59 @@ else:
     DATABASE_URL = "sqlite:///./notes_app.db"
     print(f"[DB] DATABASE_URL не задана, используем SQLite: {DATABASE_URL}")
 
-# Создаём движок базы данных
-# check_same_thread=False нужен для SQLite при многопоточном доступе
-connect_args = {}
-if DATABASE_URL.startswith("sqlite"):
-    connect_args["check_same_thread"] = False
+# Ленивая инициализация engine для избежания блокировки при импорте
+_engine = None
+_SessionLocal = None
 
-engine = create_engine(DATABASE_URL, connect_args=connect_args)
+
+def _get_engine():
+    """Получить или создать engine (ленивая инициализация)"""
+    global _engine
+    if _engine is None:
+        # Создаём движок базы данных
+        # check_same_thread=False нужен для SQLite при многопоточном доступе
+        connect_args = {}
+        if DATABASE_URL.startswith("sqlite"):
+            connect_args["check_same_thread"] = False
+
+        # Добавляем параметры пула соединений для PostgreSQL
+        pool_options = {}
+        if DATABASE_URL.startswith("postgresql"):
+            pool_options = {
+                "pool_pre_ping": True,  # Проверка соединения перед использованием
+                "pool_size": 5,
+                "max_overflow": 10,
+                "pool_timeout": 30,  # Таймаут ожидания соединения из пула
+                "pool_recycle": 1800,  # Пересоздание соединений каждые 30 минут
+            }
+
+        _engine = create_engine(
+            DATABASE_URL, 
+            connect_args=connect_args,
+            **pool_options
+        )
+        print("[DB] Engine создан")
+    return _engine
+
+
+def _get_session_local():
+    """Получить или создать SessionLocal (ленивая инициализация)"""
+    global _SessionLocal
+    if _SessionLocal is None:
+        engine = _get_engine()
+        # expire_on_commit=False важен для того, чтобы объекты оставались доступными после закрытия сессии
+        _SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine, expire_on_commit=False)
+        print("[DB] SessionLocal создан")
+    return _SessionLocal
+
 
 # Создаём базовый класс для моделей
 Base = declarative_base()
 
-# Создаём сессию
-# expire_on_commit=False важен для того, чтобы объекты оставались доступными после закрытия сессии
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine, expire_on_commit=False)
+
+def get_new_session():
+    """Создать новую сессию БД"""
+    return _get_session_local()()
 
 
 class Note(Base):
@@ -93,6 +132,7 @@ class Task(Base):
 
 def init_db():
     """Инициализация базы данных - создание таблиц"""
+    engine = _get_engine()
     Base.metadata.create_all(bind=engine)
     
     # Миграция: добавление столбцов file_data и gcs_path если их нет
@@ -127,7 +167,7 @@ def init_db():
 
 def get_db():
     """Получение сессии базы данных"""
-    db = SessionLocal()
+    db = get_new_session()
     try:
         return db
     finally:
@@ -137,7 +177,7 @@ def get_db():
 # Функции для работы с заметками
 def create_note(user_id: int, title: str, content: str = "") -> Note:
     """Создать новую заметку"""
-    db = SessionLocal()
+    db = get_new_session()
     try:
         note = Note(user_id=user_id, title=title, content=content)
         db.add(note)
@@ -151,7 +191,7 @@ def create_note(user_id: int, title: str, content: str = "") -> Note:
 
 def get_notes_by_user(user_id: int) -> list:
     """Получить все заметки пользователя"""
-    db = SessionLocal()
+    db = get_new_session()
     try:
         notes = db.query(Note).filter(Note.user_id == user_id).order_by(Note.created_at.desc()).all()
         for note in notes:
@@ -163,7 +203,7 @@ def get_notes_by_user(user_id: int) -> list:
 
 def get_note_by_id(note_id: int, user_id: int) -> Note:
     """Получить заметку по ID"""
-    db = SessionLocal()
+    db = get_new_session()
     try:
         note = db.query(Note).filter(Note.id == note_id, Note.user_id == user_id).first()
         if note:
@@ -175,7 +215,7 @@ def get_note_by_id(note_id: int, user_id: int) -> Note:
 
 def update_note(note_id: int, user_id: int, title: str = None, content: str = None) -> Note:
     """Обновить заметку"""
-    db = SessionLocal()
+    db = get_new_session()
     try:
         note = db.query(Note).filter(Note.id == note_id, Note.user_id == user_id).first()
         if note:
@@ -194,7 +234,7 @@ def update_note(note_id: int, user_id: int, title: str = None, content: str = No
 
 def delete_note(note_id: int, user_id: int) -> bool:
     """Удалить заметку"""
-    db = SessionLocal()
+    db = get_new_session()
     try:
         note = db.query(Note).filter(Note.id == note_id, Note.user_id == user_id).first()
         if note:
@@ -209,7 +249,7 @@ def delete_note(note_id: int, user_id: int) -> bool:
 # Функции для работы с задачами
 def create_task(user_id: int, title: str, description: str = "", interval_minutes: int = 60) -> Task:
     """Создать новую задачу"""
-    db = SessionLocal()
+    db = get_new_session()
     try:
         next_notification = moscow_now() + timedelta(minutes=interval_minutes)
         task = Task(
@@ -231,7 +271,7 @@ def create_task(user_id: int, title: str, description: str = "", interval_minute
 
 def get_tasks_by_user(user_id: int, active_only: bool = True) -> list:
     """Получить все задачи пользователя"""
-    db = SessionLocal()
+    db = get_new_session()
     try:
         query = db.query(Task).filter(Task.user_id == user_id)
         if active_only:
@@ -246,7 +286,7 @@ def get_tasks_by_user(user_id: int, active_only: bool = True) -> list:
 
 def get_task_by_id(task_id: int, user_id: int) -> Task:
     """Получить задачу по ID"""
-    db = SessionLocal()
+    db = get_new_session()
     try:
         task = db.query(Task).filter(Task.id == task_id, Task.user_id == user_id).first()
         if task:
@@ -259,7 +299,7 @@ def get_task_by_id(task_id: int, user_id: int) -> Task:
 def update_task(task_id: int, user_id: int, title: str = None, description: str = None, 
                 interval_minutes: int = None, is_active: bool = None) -> Task:
     """Обновить задачу"""
-    db = SessionLocal()
+    db = get_new_session()
     try:
         task = db.query(Task).filter(Task.id == task_id, Task.user_id == user_id).first()
         if task:
@@ -284,7 +324,7 @@ def update_task(task_id: int, user_id: int, title: str = None, description: str 
 
 def delete_task(task_id: int, user_id: int) -> bool:
     """Удалить задачу"""
-    db = SessionLocal()
+    db = get_new_session()
     try:
         task = db.query(Task).filter(Task.id == task_id, Task.user_id == user_id).first()
         if task:
@@ -298,7 +338,7 @@ def delete_task(task_id: int, user_id: int) -> bool:
 
 def get_tasks_due_for_notification() -> list:
     """Получить задачи, для которых пора отправить уведомление"""
-    db = SessionLocal()
+    db = get_new_session()
     try:
         tasks = db.query(Task).filter(
             Task.is_active == True,
@@ -313,7 +353,7 @@ def get_tasks_due_for_notification() -> list:
 
 def update_task_next_notification(task_id: int) -> Task:
     """Обновить время следующего уведомления для задачи"""
-    db = SessionLocal()
+    db = get_new_session()
     try:
         task = db.query(Task).filter(Task.id == task_id).first()
         if task:
@@ -342,7 +382,7 @@ def create_attachment(note_id: int, filename: str, file_type: str,
         file_size: Размер файла в байтах
         gcs_path: Путь к файлу в Google Cloud Storage (приоритетный)
     """
-    db = SessionLocal()
+    db = get_new_session()
     try:
         attachment = Attachment(
             note_id=note_id,
@@ -365,7 +405,7 @@ def create_attachment(note_id: int, filename: str, file_type: str,
 
 def get_attachments_by_note(note_id: int) -> list:
     """Получить все вложения заметки"""
-    db = SessionLocal()
+    db = get_new_session()
     try:
         attachments = db.query(Attachment).filter(Attachment.note_id == note_id).order_by(Attachment.created_at.asc()).all()
         for attachment in attachments:
@@ -377,7 +417,7 @@ def get_attachments_by_note(note_id: int) -> list:
 
 def get_attachment_by_id(attachment_id: int) -> Attachment:
     """Получить вложение по ID"""
-    db = SessionLocal()
+    db = get_new_session()
     try:
         attachment = db.query(Attachment).filter(Attachment.id == attachment_id).first()
         if attachment:
@@ -389,7 +429,7 @@ def get_attachment_by_id(attachment_id: int) -> Attachment:
 
 def delete_attachment(attachment_id: int) -> Attachment:
     """Удалить вложение и вернуть его данные для удаления файла"""
-    db = SessionLocal()
+    db = get_new_session()
     try:
         attachment = db.query(Attachment).filter(Attachment.id == attachment_id).first()
         if attachment:
@@ -403,7 +443,7 @@ def delete_attachment(attachment_id: int) -> Attachment:
 
 def get_note_with_attachments(note_id: int, user_id: int):
     """Получить заметку с вложениями"""
-    db = SessionLocal()
+    db = get_new_session()
     try:
         note = db.query(Note).filter(Note.id == note_id, Note.user_id == user_id).first()
         if note:
