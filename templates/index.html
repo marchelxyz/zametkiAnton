@@ -736,21 +736,53 @@
         let cachedInitData = null;  // Кешируем initData при первом получении
         let sessionToken = null;    // Токен сессии для авторизации через бота
         
-        // Загружаем session_token из localStorage при старте
+        // Загружаем session_token и cached initData из localStorage при старте
         try {
             sessionToken = localStorage.getItem('session_token');
             if (sessionToken) {
                 console.log('[AUTH] Загружен session_token из localStorage');
             }
+            
+            // Загружаем закешированную initData
+            const storedInitData = localStorage.getItem('cached_init_data');
+            if (storedInitData) {
+                cachedInitData = storedInitData;
+                console.log('[AUTH] Загружена cached initData из localStorage, длина:', cachedInitData.length);
+            }
         } catch (e) {
-            console.warn('[AUTH] Не удалось загрузить session_token из localStorage:', e);
+            console.warn('[AUTH] Не удалось загрузить данные из localStorage:', e);
         }
 
+        // Сохранить initData в localStorage для последующего использования
+        function saveInitDataToStorage(initData) {
+            if (!initData) return;
+            cachedInitData = initData;
+            try {
+                localStorage.setItem('cached_init_data', initData);
+                console.log('[AUTH] initData сохранена в localStorage');
+            } catch (e) {
+                console.warn('[AUTH] Не удалось сохранить initData в localStorage:', e);
+            }
+        }
+        
+        // Очистить все данные авторизации (для принудительного выхода)
+        function clearAllAuthData() {
+            sessionToken = null;
+            cachedInitData = null;
+            try {
+                localStorage.removeItem('session_token');
+                localStorage.removeItem('cached_init_data');
+                console.log('[AUTH] Все данные авторизации очищены');
+            } catch (e) {}
+        }
+        
         // Получаем initData из разных источников (fallback)
         function extractInitData() {
-            // 1. Приоритет: tg.initData от SDK
+            // 1. Приоритет: tg.initData от SDK (самая свежая)
             if (tg.initData && tg.initData.length > 0) {
                 console.log('[TG] initData получена от SDK, длина:', tg.initData.length);
+                // Сохраняем свежую initData
+                saveInitDataToStorage(tg.initData);
                 return tg.initData;
             }
             
@@ -762,8 +794,10 @@
                         const params = new URLSearchParams(hashData);
                         const webAppData = params.get('tgWebAppData');
                         if (webAppData) {
-                            console.log('[TG] initData получена из URL hash, длина:', webAppData.length);
-                            return decodeURIComponent(webAppData);
+                            const decoded = decodeURIComponent(webAppData);
+                            console.log('[TG] initData получена из URL hash, длина:', decoded.length);
+                            saveInitDataToStorage(decoded);
+                            return decoded;
                         }
                     } catch (e) {
                         console.warn('[TG] Ошибка парсинга hash:', e);
@@ -777,13 +811,14 @@
                 const webAppData = urlParams.get('tgWebAppData');
                 if (webAppData) {
                     console.log('[TG] initData получена из URL params, длина:', webAppData.length);
+                    saveInitDataToStorage(webAppData);
                     return webAppData;
                 }
             }
             
-            // 4. Используем закешированные данные если есть
+            // 4. Используем закешированные данные из localStorage если есть
             if (cachedInitData) {
-                console.log('[TG] Используем закешированную initData, длина:', cachedInitData.length);
+                console.log('[TG] Используем закешированную initData из localStorage, длина:', cachedInitData.length);
                 return cachedInitData;
             }
             
@@ -793,24 +828,27 @@
 
         // Проверяем, запущено ли приложение в Telegram
         function checkTelegramEnvironment() {
-            // Пробуем получить initData из разных источников
+            // Пробуем получить initData из разных источников (включая localStorage)
             const initData = extractInitData();
             const hasInitData = initData && initData.length > 0;
             
-            // Кешируем initData для последующих запросов
-            if (hasInitData) {
-                cachedInitData = initData;
-            }
+            // Проверяем наличие session_token (может работать даже без свежей initData)
+            const hasSession = !!sessionToken;
             
             console.log('[TG] initData length:', initData ? initData.length : 0);
+            console.log('[TG] session_token:', hasSession ? 'есть' : 'нет');
             console.log('[TG] initDataUnsafe.user:', tg.initDataUnsafe ? JSON.stringify(tg.initDataUnsafe.user) : 'null');
             console.log('[TG] platform:', tg.platform);
             console.log('[TG] version:', tg.version);
             
-            // Проверяем, есть ли у нас валидная initData для авторизации
-            if (hasInitData) {
+            // Можем работать если есть либо initData, либо session_token
+            if (hasInitData || hasSession) {
                 isInTelegram = true;
-                console.log('[TG] initData доступна, авторизация возможна');
+                if (hasInitData) {
+                    console.log('[TG] initData доступна, авторизация возможна');
+                } else {
+                    console.log('[TG] Работаем с session_token из localStorage');
+                }
             } else if (tg.initDataUnsafe && tg.initDataUnsafe.user) {
                 // initDataUnsafe есть, но initData пустая - это проблема
                 // Такое может быть при определённых условиях (старые версии, тестовый режим)
@@ -819,7 +857,7 @@
                 console.warn('[TG] Это может означать проблему с версией Telegram или WebApp SDK');
             } else {
                 isInTelegram = false;
-                console.warn('[TG] Приложение открыто вне Telegram. initData недоступна.');
+                console.warn('[TG] Приложение открыто вне Telegram. initData и session недоступны.');
             }
             
             return isInTelegram;
@@ -831,10 +869,11 @@
             
             // Проверяем, есть ли initDataUnsafe (частичные данные)
             const hasPartialData = !!(tg.initDataUnsafe && tg.initDataUnsafe.user);
+            const hasAnyInitData = !!(tg.initData || cachedInitData);
             
             let warningHtml;
             
-            if (hasPartialData) {
+            if (hasPartialData || hasAnyInitData) {
                 // initDataUnsafe есть, но initData пустая - особый случай
                 warningHtml = `
                     <div style="text-align: center; padding: 40px 20px;">
@@ -843,14 +882,17 @@
                             <b>Ошибка авторизации</b>
                         </div>
                         <div style="font-size: 14px; color: var(--tg-theme-hint-color); margin-bottom: 16px;">
-                            Данные авторизации недоступны.<br><br>
+                            Не удалось авторизоваться.<br><br>
                             Попробуйте:<br>
                             1. Закрыть и открыть приложение заново<br>
-                            2. Обновить Telegram до последней версии<br>
-                            3. Очистить кеш приложения
+                            2. Нажать "Сбросить и перезагрузить"<br>
+                            3. Обновить Telegram до последней версии
                         </div>
                         <button class="btn btn-primary" onclick="forceReload()" style="margin-bottom: 8px; width: 100%;">
                             🔄 Перезагрузить
+                        </button>
+                        <button class="btn btn-secondary" onclick="resetAndReload()" style="margin-bottom: 8px; width: 100%;">
+                            🗑 Сбросить и перезагрузить
                         </button>
                         <button class="btn btn-secondary" onclick="tryLoadAnyway()" style="width: 100%;">
                             Попробовать всё равно
@@ -872,11 +914,20 @@
                             Это приложение работает только<br>как Telegram Mini App.<br><br>
                             Откройте бота и запустите<br>приложение через меню.
                         </div>
+                        <button class="btn btn-secondary" onclick="tryLoadAnyway()" style="margin-top: 16px; width: 100%;">
+                            Попробовать всё равно
+                        </button>
                     </div>
                 `;
             }
             
             notesLoading.innerHTML = warningHtml;
+        }
+        
+        // Сбросить данные авторизации и перезагрузить
+        function resetAndReload() {
+            clearAllAuthData();
+            window.location.reload(true);
         }
         
         // Принудительная перезагрузка страницы
@@ -953,7 +1004,8 @@
         
         // Создать сессию авторизации (вызывается при первом запуске)
         async function createAuthSession() {
-            const initData = getInitData();
+            // Используем extractInitData чтобы получить данные из всех источников (включая localStorage)
+            const initData = extractInitData();
             
             if (!initData) {
                 console.warn('[AUTH] Нет initData для создания сессии');
@@ -961,7 +1013,7 @@
             }
             
             try {
-                console.log('[AUTH] Создаём сессию авторизации...');
+                console.log('[AUTH] Создаём сессию авторизации, initData длина:', initData.length);
                 
                 const response = await fetch('/api/auth/session', {
                     method: 'POST',
@@ -971,7 +1023,13 @@
                     }
                 });
                 
-                const result = await response.json();
+                let result;
+                try {
+                    result = await response.json();
+                } catch (e) {
+                    console.error('[AUTH] Ошибка парсинга ответа:', e);
+                    return false;
+                }
                 
                 if (response.ok && result.session_token) {
                     saveSessionToken(result.session_token);
@@ -979,6 +1037,14 @@
                     return true;
                 } else {
                     console.error('[AUTH] ✗ Не удалось создать сессию:', result.error || result.message);
+                    // Если initData невалидна - очищаем кеш
+                    if (response.status === 401) {
+                        console.log('[AUTH] initData невалидна, очищаем кеш...');
+                        try {
+                            localStorage.removeItem('cached_init_data');
+                            cachedInitData = null;
+                        } catch (e) {}
+                    }
                     return false;
                 }
             } catch (error) {
@@ -1045,16 +1111,32 @@
                 if (response.status === 401) {
                     console.error('[API] Ошибка 401 (Unauthorized)');
                     
-                    // Если нужна переавторизация и есть initData - пробуем создать новую сессию
-                    if (result.need_reauth && retryAfterReauth && initData) {
+                    // Пробуем переавторизоваться если это первая попытка
+                    if (retryAfterReauth) {
                         console.log('[API] Пробуем переавторизоваться...');
+                        
+                        // Очищаем старый session_token
                         clearSessionToken();
                         
-                        const reauthSuccess = await createAuthSession();
-                        if (reauthSuccess) {
-                            console.log('[API] Переавторизация успешна, повторяем запрос...');
-                            // Повторяем запрос с новым токеном (без повторной переавторизации)
-                            return apiCall(method, endpoint, data, false);
+                        // Пробуем извлечь свежую initData
+                        const freshInitData = extractInitData();
+                        
+                        if (freshInitData) {
+                            console.log('[API] Есть initData, создаём новую сессию...');
+                            const reauthSuccess = await createAuthSession();
+                            if (reauthSuccess) {
+                                console.log('[API] Переавторизация успешна, повторяем запрос...');
+                                // Повторяем запрос с новым токеном (без повторной переавторизации)
+                                return apiCall(method, endpoint, data, false);
+                            } else {
+                                console.error('[API] Переавторизация не удалась');
+                                // Очищаем все данные авторизации, чтобы при следующем запуске был чистый старт
+                                clearAllAuthData();
+                            }
+                        } else {
+                            console.error('[API] Нет initData для переавторизации');
+                            // Очищаем все данные, чтобы при перезапуске был чистый старт
+                            clearAllAuthData();
                         }
                     }
                     
@@ -1488,6 +1570,8 @@
                 return;
             }
 
+            console.log('[SAVE] Сохранение заметки:', { title: title.substring(0, 30), isNew: !currentNoteId });
+
             try {
                 let result;
                 if (currentNoteId) {
@@ -1496,18 +1580,27 @@
                     result = await apiCall('POST', '/api/notes', { title, content });
                 }
 
+                console.log('[SAVE] Ответ сервера:', result);
+
                 // Проверяем, что заметка успешно сохранена (есть id в ответе)
                 if (result && result.id) {
+                    console.log('[SAVE] ✓ Заметка сохранена, id:', result.id);
                     closeNoteModal();
                     await loadNotes();
                     try { tg.HapticFeedback.notificationOccurred('success'); } catch(e) {}
                 } else {
-                    throw new Error('Не удалось сохранить заметку');
+                    console.error('[SAVE] ✗ Некорректный ответ:', result);
+                    throw new Error('Сервер не вернул ID заметки');
                 }
             } catch (error) {
-                console.error('Ошибка сохранения:', error);
+                console.error('[SAVE] ✗ Ошибка сохранения:', error);
                 try { tg.HapticFeedback.notificationOccurred('error'); } catch(e) {}
-                showMessage('Ошибка сохранения: ' + (error.message || 'Неизвестная ошибка'), 'error');
+                
+                let errorMsg = error.message || 'Неизвестная ошибка';
+                if (errorMsg.includes('авторизац') || errorMsg.includes('401')) {
+                    errorMsg = 'Ошибка авторизации. Закройте и откройте приложение заново.';
+                }
+                showMessage('Ошибка сохранения: ' + errorMsg, 'error');
             }
         }
 
@@ -1708,6 +1801,8 @@
                 return;
             }
 
+            console.log('[SAVE] Сохранение задачи:', { title: title.substring(0, 30), isNew: !currentTaskId, interval_minutes });
+
             try {
                 let result;
                 if (currentTaskId) {
@@ -1724,18 +1819,27 @@
                     });
                 }
 
+                console.log('[SAVE] Ответ сервера:', result);
+
                 // Проверяем, что задача успешно сохранена (есть id в ответе)
                 if (result && result.id) {
+                    console.log('[SAVE] ✓ Задача сохранена, id:', result.id);
                     closeTaskModal();
                     await loadTasks();
                     try { tg.HapticFeedback.notificationOccurred('success'); } catch(e) {}
                 } else {
-                    throw new Error('Не удалось сохранить задачу');
+                    console.error('[SAVE] ✗ Некорректный ответ:', result);
+                    throw new Error('Сервер не вернул ID задачи');
                 }
             } catch (error) {
-                console.error('Ошибка сохранения:', error);
+                console.error('[SAVE] ✗ Ошибка сохранения:', error);
                 try { tg.HapticFeedback.notificationOccurred('error'); } catch(e) {}
-                showMessage('Ошибка сохранения: ' + (error.message || 'Неизвестная ошибка'), 'error');
+                
+                let errorMsg = error.message || 'Неизвестная ошибка';
+                if (errorMsg.includes('авторизац') || errorMsg.includes('401')) {
+                    errorMsg = 'Ошибка авторизации. Закройте и откройте приложение заново.';
+                }
+                showMessage('Ошибка сохранения: ' + errorMsg, 'error');
             }
         }
 
@@ -1867,22 +1971,27 @@
             initAttempts++;
             console.log(`[INIT] Попытка инициализации ${initAttempts}/${MAX_INIT_ATTEMPTS}`);
             console.log(`[INIT] session_token: ${sessionToken ? 'есть' : 'нет'}`);
+            console.log(`[INIT] cached_init_data: ${cachedInitData ? cachedInitData.length + 'b' : 'нет'}`);
             
             const inTelegram = checkTelegramEnvironment();
             
-            // Если есть session_token - можем работать даже без initData
+            // Если есть session_token - пробуем работать с ним
             if (sessionToken) {
-                console.log('[INIT] Есть session_token, продолжаем работу');
-                loadNotesWithAuth();
+                console.log('[INIT] Есть session_token, пробуем загрузить данные...');
+                await loadNotesWithAuth();
                 return;
             }
             
-            if (inTelegram) {
+            // Есть свежая initData от Telegram SDK - создаём сессию
+            if (inTelegram && (tg.initData || cachedInitData)) {
                 console.log('[INIT] Успешная инициализация в Telegram');
                 // Создаём сессию для надёжной авторизации
-                await createAuthSession();
+                const sessionCreated = await createAuthSession();
+                if (sessionCreated) {
+                    console.log('[INIT] Сессия создана успешно');
+                }
                 // Загружаем заметки при старте
-                loadNotesWithAuth();
+                await loadNotesWithAuth();
                 return;
             }
             
@@ -1905,19 +2014,33 @@
                 await loadNotes();
             } catch (error) {
                 console.error('[INIT] Ошибка загрузки заметок:', error);
-                // Если ошибка авторизации и есть initData - пробуем переавторизоваться
-                if (error.message && error.message.includes('авторизац')) {
-                    const initData = getInitData();
+                
+                // Если ошибка авторизации - пробуем переавторизоваться
+                if (error.message && (error.message.includes('авторизац') || error.message.includes('401') || error.message.includes('Unauthorized'))) {
+                    console.log('[INIT] Ошибка авторизации, пробуем переавторизоваться...');
+                    
+                    // Очищаем старый токен
+                    clearSessionToken();
+                    
+                    // Пробуем получить initData
+                    const initData = extractInitData();
                     if (initData) {
-                        console.log('[INIT] Пробуем создать новую сессию...');
-                        clearSessionToken();
+                        console.log('[INIT] Есть initData, создаём новую сессию...');
                         const success = await createAuthSession();
                         if (success) {
-                            await loadNotes();
-                            return;
+                            try {
+                                await loadNotes();
+                                return;
+                            } catch (retryError) {
+                                console.error('[INIT] Повторная ошибка после переавторизации:', retryError);
+                            }
                         }
                     }
+                    
+                    // Если ничего не помогло - очищаем все данные для чистого старта при следующем запуске
+                    clearAllAuthData();
                 }
+                
                 showNotInTelegramWarning();
             }
         }
