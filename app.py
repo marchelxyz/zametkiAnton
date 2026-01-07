@@ -3,6 +3,7 @@ import json
 import hashlib
 import hmac
 import uuid
+import base64
 import requests
 import atexit
 from urllib.parse import unquote, parse_qs
@@ -10,6 +11,8 @@ from flask import Flask, request, jsonify, render_template, send_from_directory
 from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
 from apscheduler.schedulers.background import BackgroundScheduler
+from nacl.signing import SigningKey
+from nacl.exceptions import BadSignature
 from database import (
     init_db, create_note, get_notes_by_user, get_note_by_id, update_note, delete_note,
     create_task, get_tasks_by_user, get_task_by_id, update_task, delete_task,
@@ -117,10 +120,65 @@ def check_and_send_notifications():
             print(f"[ERROR] Ошибка при проверке уведомлений: {e}")
 
 
+def verify_telegram_signature(bot_token: str, data_check_string: str, signature_b64: str) -> bool:
+    """
+    Проверка Ed25519 подписи (новый формат Telegram Mini Apps с Bot API 6.7+).
+    
+    Алгоритм:
+    1. Создаём seed = SHA256(bot_token)
+    2. Из seed создаём Ed25519 keypair
+    3. Проверяем подпись signature над data_check_string
+    """
+    try:
+        # Создаём seed из SHA256(bot_token)
+        seed = hashlib.sha256(bot_token.encode()).digest()
+        
+        # Создаём SigningKey (приватный ключ) из seed
+        signing_key = SigningKey(seed)
+        
+        # Получаем VerifyKey (публичный ключ)
+        verify_key = signing_key.verify_key
+        
+        # Декодируем signature из base64
+        signature = base64.b64decode(signature_b64)
+        
+        # Проверяем подпись
+        verify_key.verify(data_check_string.encode(), signature)
+        return True
+        
+    except BadSignature:
+        return False
+    except Exception as e:
+        print(f"[AUTH] Ошибка проверки Ed25519 подписи: {e}")
+        return False
+
+
+def verify_telegram_hash(bot_token: str, data_check_string: str, received_hash: str) -> bool:
+    """
+    Проверка HMAC-SHA256 хэша (старый формат Telegram Mini Apps).
+    
+    Алгоритм:
+    1. secret_key = HMAC_SHA256("WebAppData", bot_token)
+    2. calculated_hash = HMAC_SHA256(secret_key, data_check_string)
+    3. Сравниваем calculated_hash с received_hash
+    """
+    # Создаём секретный ключ согласно документации Telegram
+    secret_key = hmac.new(b"WebAppData", bot_token.encode(), hashlib.sha256).digest()
+    
+    # Вычисляем hash для проверки
+    calculated_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
+    
+    return hmac.compare_digest(calculated_hash, received_hash)
+
+
 def verify_telegram_data(init_data: str) -> dict:
     """
     Проверка данных от Telegram Mini App.
     Возвращает данные пользователя если валидация успешна.
+    
+    Поддерживает два формата:
+    1. Новый формат (Bot API 6.7+) с signature (Ed25519)
+    2. Старый формат с hash (HMAC-SHA256)
     
     ВАЖНО: init_data от Telegram приходит в URL-encoded формате,
     поэтому значения нужно декодировать перед проверкой подписи.
@@ -157,11 +215,12 @@ def verify_telegram_data(init_data: str) -> dict:
                 # URL-декодируем значение
                 parsed_data[key] = unquote(value)
         
-        # Получаем hash и удаляем его из данных для проверки
+        # Определяем формат верификации: signature (новый) или hash (старый)
+        received_signature = parsed_data.pop('signature', '')
         received_hash = parsed_data.pop('hash', '')
         
-        if not received_hash:
-            print("[AUTH] Ошибка верификации: hash отсутствует в init_data")
+        if not received_signature and not received_hash:
+            print("[AUTH] Ошибка верификации: ни signature, ни hash не найдены в init_data")
             print(f"[AUTH]   - Доступные ключи: {list(parsed_data.keys())}")
             return None
         
@@ -188,29 +247,47 @@ def verify_telegram_data(init_data: str) -> dict:
         # Формат: key=value\nkey=value\n...
         data_check_string = '\n'.join(f"{k}={v}" for k, v in sorted(parsed_data.items()))
         
-        # Создаём секретный ключ согласно документации Telegram:
-        # secret_key = HMAC_SHA256("WebAppData", bot_token)
-        # В Python hmac.new(key, msg), где key="WebAppData", msg=bot_token
-        secret_key = hmac.new(b"WebAppData", BOT_TOKEN.encode(), hashlib.sha256).digest()
+        # Проверяем подпись в зависимости от формата
+        verification_success = False
+        verification_method = ""
         
-        # Вычисляем hash для проверки
-        calculated_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
+        if received_signature:
+            # Новый формат с Ed25519 signature (Bot API 6.7+)
+            verification_method = "signature (Ed25519)"
+            verification_success = verify_telegram_signature(BOT_TOKEN, data_check_string, received_signature)
+            
+            if not verification_success:
+                print(f"[AUTH] ✗ Ошибка верификации: signature не прошла проверку Ed25519")
+                print(f"[AUTH]   - signature (первые 20 символов): {received_signature[:20]}...")
+                print(f"[AUTH]   - BOT_TOKEN длина: {len(BOT_TOKEN)}, начинается с: {BOT_TOKEN[:10]}...")
+                print(f"[AUTH]   - Проверьте, что BOT_TOKEN совпадает с токеном бота в BotFather")
+                print(f"[AUTH]   - Ключи в данных: {list(parsed_data.keys())}")
         
-        # Сравниваем hash
-        if hmac.compare_digest(calculated_hash, received_hash):
+        elif received_hash:
+            # Старый формат с HMAC-SHA256 hash
+            verification_method = "hash (HMAC-SHA256)"
+            verification_success = verify_telegram_hash(BOT_TOKEN, data_check_string, received_hash)
+            
+            if not verification_success:
+                # Вычисляем hash для отладки
+                secret_key = hmac.new(b"WebAppData", BOT_TOKEN.encode(), hashlib.sha256).digest()
+                calculated_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
+                
+                print(f"[AUTH] ✗ Ошибка верификации: hash не совпадает")
+                print(f"[AUTH]   - Получен: {received_hash[:20]}...")
+                print(f"[AUTH]   - Вычислен: {calculated_hash[:20]}...")
+                print(f"[AUTH]   - BOT_TOKEN длина: {len(BOT_TOKEN)}, начинается с: {BOT_TOKEN[:10]}...")
+                print(f"[AUTH]   - Проверьте, что BOT_TOKEN совпадает с токеном бота в BotFather")
+                print(f"[AUTH]   - Ключи в данных: {list(parsed_data.keys())}")
+        
+        if verification_success:
             # Подпись верна, извлекаем данные пользователя
             user_json = parsed_data.get('user', '{}')
             user_data = json.loads(user_json)
-            print(f"[AUTH] ✓ Верификация успешна для пользователя: {user_data.get('id')} ({user_data.get('username', 'no username')})")
+            print(f"[AUTH] ✓ Верификация успешна ({verification_method}) для пользователя: {user_data.get('id')} ({user_data.get('username', 'no username')})")
             return user_data
-        else:
-            print(f"[AUTH] ✗ Ошибка верификации: hash не совпадает")
-            print(f"[AUTH]   - Получен: {received_hash[:20]}...")
-            print(f"[AUTH]   - Вычислен: {calculated_hash[:20]}...")
-            print(f"[AUTH]   - BOT_TOKEN длина: {len(BOT_TOKEN)}, начинается с: {BOT_TOKEN[:10]}...")
-            print(f"[AUTH]   - Проверьте, что BOT_TOKEN совпадает с токеном бота в BotFather")
-            print(f"[AUTH]   - Ключи в данных: {list(parsed_data.keys())}")
-            return None
+        
+        return None
             
     except json.JSONDecodeError as e:
         print(f"[AUTH] Ошибка верификации: некорректный JSON в user data: {e}")
