@@ -144,6 +144,23 @@ class UserSession(Base):
     is_active = Column(Boolean, default=True)  # Активна ли сессия
 
 
+class WebUser(Base):
+    """
+    Модель веб-пользователя для доступа к приложению через браузер без Telegram.
+    Имитирует пользователя Telegram с фиксированным ID для веб-версии.
+    """
+    __tablename__ = "web_users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    # Виртуальный Telegram user ID (отрицательный, чтобы не пересекался с реальными)
+    virtual_user_id = Column(BigInteger, unique=True, nullable=False, index=True)
+    name = Column(String(255), nullable=False)  # Отображаемое имя пользователя
+    access_token = Column(String(64), unique=True, nullable=False, index=True)  # Токен для доступа
+    is_active = Column(Boolean, default=True)  # Активен ли пользователь
+    created_at = Column(DateTime, default=moscow_now)
+    last_used_at = Column(DateTime, default=moscow_now)
+
+
 def init_db():
     """Инициализация базы данных - создание таблиц"""
     engine = _get_engine()
@@ -604,5 +621,148 @@ def cleanup_old_sessions(days: int = 30) -> int:
         ).delete()
         db.commit()
         return count
+    finally:
+        db.close()
+
+
+# ==================== Функции для работы с веб-пользователями ====================
+
+# Базовый ID для виртуальных пользователей (отрицательный, чтобы не пересекался с Telegram ID)
+WEB_USER_BASE_ID = -1000000
+
+
+def get_or_create_web_user(name: str = "Веб-пользователь") -> tuple:
+    """
+    Получить или создать веб-пользователя.
+    Возвращает кортеж (web_user, access_token, is_new).
+    
+    По умолчанию создаётся один пользователь для веб-версии.
+    """
+    import secrets
+    
+    db = get_new_session()
+    try:
+        # Проверяем, есть ли уже активный веб-пользователь
+        existing = db.query(WebUser).filter(
+            WebUser.is_active == True
+        ).first()
+        
+        if existing:
+            # Обновляем время последнего использования
+            existing.last_used_at = moscow_now()
+            db.commit()
+            db.expunge(existing)
+            print(f"[DB] get_or_create_web_user - найден существующий: virtual_id={existing.virtual_user_id}")
+            return existing, existing.access_token, False
+        
+        # Создаём нового веб-пользователя
+        virtual_user_id = WEB_USER_BASE_ID - 1  # -1000001
+        access_token = secrets.token_hex(32)  # 64 символа hex
+        
+        new_user = WebUser(
+            virtual_user_id=virtual_user_id,
+            name=name,
+            access_token=access_token,
+            is_active=True
+        )
+        db.add(new_user)
+        db.commit()
+        db.refresh(new_user)
+        db.expunge(new_user)
+        
+        print(f"[DB] get_or_create_web_user - создан новый: virtual_id={virtual_user_id}")
+        return new_user, access_token, True
+        
+    except Exception as e:
+        print(f"[DB] get_or_create_web_user - ошибка: {e}")
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+def get_web_user_by_token(access_token: str) -> dict:
+    """
+    Получить веб-пользователя по токену доступа.
+    Возвращает dict с данными пользователя в формате, совместимом с Telegram user,
+    или None если пользователь не найден.
+    """
+    if not access_token or len(access_token) < 32:
+        return None
+    
+    db = get_new_session()
+    try:
+        web_user = db.query(WebUser).filter(
+            WebUser.access_token == access_token,
+            WebUser.is_active == True
+        ).first()
+        
+        if not web_user:
+            print(f"[DB] get_web_user_by_token - пользователь не найден")
+            return None
+        
+        # Обновляем время последнего использования
+        web_user.last_used_at = moscow_now()
+        db.commit()
+        
+        print(f"[DB] get_web_user_by_token - ✓ найден virtual_id={web_user.virtual_user_id}")
+        
+        # Возвращаем данные в формате Telegram user
+        return {
+            "id": web_user.virtual_user_id,
+            "first_name": web_user.name,
+            "username": "web_user",
+            "is_web_user": True  # Флаг для идентификации веб-пользователя
+        }
+        
+    except Exception as e:
+        print(f"[DB] get_web_user_by_token - ошибка: {e}")
+        return None
+    finally:
+        db.close()
+
+
+def get_all_web_users() -> list:
+    """Получить список всех веб-пользователей"""
+    db = get_new_session()
+    try:
+        users = db.query(WebUser).all()
+        for user in users:
+            db.expunge(user)
+        return users
+    finally:
+        db.close()
+
+
+def update_web_user(virtual_user_id: int, name: str = None, is_active: bool = None) -> WebUser:
+    """Обновить данные веб-пользователя"""
+    db = get_new_session()
+    try:
+        user = db.query(WebUser).filter(WebUser.virtual_user_id == virtual_user_id).first()
+        if user:
+            if name is not None:
+                user.name = name
+            if is_active is not None:
+                user.is_active = is_active
+            db.commit()
+            db.refresh(user)
+            db.expunge(user)
+        return user
+    finally:
+        db.close()
+
+
+def regenerate_web_user_token(virtual_user_id: int) -> str:
+    """Сгенерировать новый токен доступа для веб-пользователя"""
+    import secrets
+    
+    db = get_new_session()
+    try:
+        user = db.query(WebUser).filter(WebUser.virtual_user_id == virtual_user_id).first()
+        if user:
+            user.access_token = secrets.token_hex(32)
+            db.commit()
+            return user.access_token
+        return None
     finally:
         db.close()

@@ -22,7 +22,8 @@ from database import (
     get_tasks_due_for_notification, update_task_next_notification,
     create_attachment, get_attachments_by_note, get_attachment_by_id, delete_attachment,
     get_note_with_attachments,
-    create_or_update_session, get_user_by_session_token
+    create_or_update_session, get_user_by_session_token,
+    get_or_create_web_user, get_web_user_by_token
 )
 from storage import (
     is_gcs_available, generate_gcs_path, upload_to_gcs, download_from_gcs, delete_from_gcs
@@ -384,15 +385,32 @@ def get_auth_headers():
     """Получить данные авторизации из заголовков запроса"""
     init_data = request.headers.get('X-Telegram-Init-Data', '')
     session_token = request.headers.get('X-Session-Token', '')
-    return init_data, session_token
+    web_access_token = request.headers.get('X-Web-Access-Token', '')
+    return init_data, session_token, web_access_token
 
 
 def authenticate_user():
     """
     Аутентификация пользователя из запроса.
+    Поддерживает три способа авторизации (в порядке приоритета):
+    1. Web Access Token - для веб-версии без Telegram
+    2. Session Token - авторизация через Telegram бота
+    3. Telegram initData - прямая авторизация через Telegram Mini App
+    
     Возвращает данные пользователя или None.
     """
-    init_data, session_token = get_auth_headers()
+    init_data, session_token, web_access_token = get_auth_headers()
+    
+    # Приоритет 1: Web Access Token (для веб-версии)
+    if web_access_token:
+        user = get_web_user_by_token(web_access_token)
+        if user:
+            print(f"[AUTH] ✓ Авторизация через web_access_token для virtual_id={user.get('id')}")
+            return user
+        else:
+            print(f"[AUTH] ✗ Web access token невалиден")
+    
+    # Приоритет 2 и 3: Telegram авторизация
     return verify_telegram_data(init_data, session_token)
 
 
@@ -447,6 +465,79 @@ def api_create_session():
         import traceback
         traceback.print_exc()
         return jsonify({"error": "Failed to create session"}), 500
+
+
+@app.route('/api/auth/web', methods=['POST'])
+def api_web_auth():
+    """
+    Авторизация для веб-версии (без Telegram).
+    
+    Создаёт или возвращает веб-пользователя с access_token.
+    Этот пользователь имитирует Telegram-пользователя и хранит данные
+    отдельно от Telegram-пользователей (с отрицательным virtual_user_id).
+    
+    Body (опционально):
+    - name: имя пользователя (по умолчанию "Веб-пользователь")
+    """
+    try:
+        data = request.get_json() or {}
+        name = data.get('name', 'Веб-пользователь')
+        
+        # Получаем или создаём веб-пользователя
+        web_user, access_token, is_new = get_or_create_web_user(name)
+        
+        action = "создан" if is_new else "найден"
+        print(f"[AUTH] Веб-пользователь {action}: virtual_id={web_user.virtual_user_id}")
+        
+        return jsonify({
+            "success": True,
+            "access_token": access_token,
+            "is_new": is_new,
+            "user": {
+                "id": web_user.virtual_user_id,
+                "name": web_user.name,
+                "is_web_user": True
+            }
+        })
+    except Exception as e:
+        print(f"[AUTH] Ошибка веб-авторизации: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": "Failed to create web user"}), 500
+
+
+@app.route('/api/auth/web/check', methods=['GET'])
+def api_web_auth_check():
+    """
+    Проверить валидность web access token.
+    
+    Headers:
+    - X-Web-Access-Token: токен веб-пользователя
+    """
+    web_access_token = request.headers.get('X-Web-Access-Token', '')
+    
+    if not web_access_token:
+        return jsonify({
+            "valid": False,
+            "error": "No access token provided"
+        }), 401
+    
+    user = get_web_user_by_token(web_access_token)
+    
+    if user:
+        return jsonify({
+            "valid": True,
+            "user": {
+                "id": user.get('id'),
+                "name": user.get('first_name'),
+                "is_web_user": True
+            }
+        })
+    else:
+        return jsonify({
+            "valid": False,
+            "error": "Invalid or expired access token"
+        }), 401
 
 
 @app.route('/api/notes', methods=['GET'])
