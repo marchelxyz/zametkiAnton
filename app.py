@@ -171,8 +171,9 @@ def verify_telegram_data(init_data: str) -> dict:
         data_check_string = '\n'.join(f"{k}={v}" for k, v in sorted(parsed_data.items()))
         
         # Создаём секретный ключ согласно документации Telegram:
-        # secret_key = HMAC_SHA256(bot_token, "WebAppData")
-        secret_key = hmac.new(BOT_TOKEN.encode(), b"WebAppData", hashlib.sha256).digest()
+        # secret_key = HMAC_SHA256("WebAppData", bot_token)
+        # В Python hmac.new(key, msg), поэтому key="WebAppData", msg=bot_token
+        secret_key = hmac.new(b"WebAppData", BOT_TOKEN.encode(), hashlib.sha256).digest()
         
         # Вычисляем hash для проверки
         calculated_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
