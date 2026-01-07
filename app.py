@@ -140,11 +140,11 @@ def verify_telegram_data(init_data: str) -> dict:
     if not init_data or '=' not in init_data:
         # Более информативное логирование
         init_data_preview = init_data[:50] if init_data else "(пустая)"
-        print(f"Ошибка верификации: init_data пустая или некорректная")
-        print(f"  - init_data длина: {len(init_data) if init_data else 0}")
-        print(f"  - init_data превью: {init_data_preview}")
-        print(f"  - Убедитесь, что приложение открыто через Telegram Mini App")
-        print(f"  - Или включите DEBUG=true для работы без Telegram")
+        print(f"[AUTH] Ошибка верификации: init_data пустая или некорректная")
+        print(f"[AUTH]   - init_data длина: {len(init_data) if init_data else 0}")
+        print(f"[AUTH]   - init_data превью: {init_data_preview}")
+        print(f"[AUTH]   - Убедитесь, что приложение открыто через Telegram Mini App")
+        print(f"[AUTH]   - Или включите DEBUG=true для работы без Telegram")
         return None
     
     try:
@@ -161,8 +161,28 @@ def verify_telegram_data(init_data: str) -> dict:
         received_hash = parsed_data.pop('hash', '')
         
         if not received_hash:
-            print("Ошибка верификации: hash отсутствует в init_data")
+            print("[AUTH] Ошибка верификации: hash отсутствует в init_data")
+            print(f"[AUTH]   - Доступные ключи: {list(parsed_data.keys())}")
             return None
+        
+        # Проверяем auth_date (данные не должны быть старше 24 часов)
+        auth_date_str = parsed_data.get('auth_date', '')
+        if auth_date_str:
+            try:
+                from datetime import datetime, timezone
+                auth_date = int(auth_date_str)
+                now = int(datetime.now(timezone.utc).timestamp())
+                age_seconds = now - auth_date
+                age_hours = age_seconds / 3600
+                
+                # Предупреждение если данные старые (но не блокируем - иногда часы сервера расходятся)
+                if age_seconds > 86400:  # 24 часа
+                    print(f"[AUTH] Предупреждение: auth_date очень старый ({age_hours:.1f} часов)")
+                elif age_seconds > 3600:  # 1 час
+                    print(f"[AUTH] Инфо: auth_date имеет возраст {age_hours:.1f} часов")
+                    
+            except (ValueError, TypeError) as e:
+                print(f"[AUTH] Не удалось проверить auth_date: {e}")
         
         # Сортируем по ключу и создаём строку для проверки подписи
         # Формат: key=value\nkey=value\n...
@@ -181,20 +201,22 @@ def verify_telegram_data(init_data: str) -> dict:
             # Подпись верна, извлекаем данные пользователя
             user_json = parsed_data.get('user', '{}')
             user_data = json.loads(user_json)
-            print(f"[OK] Верификация успешна для пользователя: {user_data.get('id')}")
+            print(f"[AUTH] ✓ Верификация успешна для пользователя: {user_data.get('id')} ({user_data.get('username', 'no username')})")
             return user_data
         else:
-            print(f"Ошибка верификации: hash не совпадает")
-            print(f"  - Получен: {received_hash[:20]}...")
-            print(f"  - Вычислен: {calculated_hash[:20]}...")
-            print(f"  - Проверьте, что BOT_TOKEN совпадает с токеном бота в Telegram")
+            print(f"[AUTH] ✗ Ошибка верификации: hash не совпадает")
+            print(f"[AUTH]   - Получен: {received_hash[:20]}...")
+            print(f"[AUTH]   - Вычислен: {calculated_hash[:20]}...")
+            print(f"[AUTH]   - BOT_TOKEN длина: {len(BOT_TOKEN)}, начинается с: {BOT_TOKEN[:10]}...")
+            print(f"[AUTH]   - Проверьте, что BOT_TOKEN совпадает с токеном бота в BotFather")
+            print(f"[AUTH]   - Ключи в данных: {list(parsed_data.keys())}")
             return None
             
     except json.JSONDecodeError as e:
-        print(f"Ошибка верификации: некорректный JSON в user data: {e}")
+        print(f"[AUTH] Ошибка верификации: некорректный JSON в user data: {e}")
         return None
     except Exception as e:
-        print(f"Ошибка верификации: {e}")
+        print(f"[AUTH] Ошибка верификации: {e}")
         import traceback
         traceback.print_exc()
         return None
@@ -213,7 +235,15 @@ def api_get_notes():
     user = verify_telegram_data(init_data)
     
     if not user:
-        return jsonify({"error": "Unauthorized"}), 401
+        # Возвращаем более детальную информацию об ошибке
+        error_details = {
+            "error": "Unauthorized",
+            "message": "Ошибка авторизации. Пожалуйста, перезапустите приложение через Telegram.",
+            "init_data_received": bool(init_data),
+            "init_data_length": len(init_data) if init_data else 0
+        }
+        print(f"[API] /api/notes GET - Ошибка авторизации, init_data длина: {len(init_data) if init_data else 0}")
+        return jsonify(error_details), 401
     
     user_id = user.get('id')
     notes = get_notes_by_user(user_id)
@@ -512,6 +542,47 @@ def debug_auth():
         "debug_mode": os.getenv("DEBUG", "false").lower() == "true"
     }
     
+    # Парсим init_data для анализа
+    if init_data and '=' in init_data:
+        try:
+            parsed = {}
+            for pair in init_data.split('&'):
+                if '=' in pair:
+                    key, value = pair.split('=', 1)
+                    parsed[key] = unquote(value)
+            
+            debug_info["parsed_keys"] = list(parsed.keys())
+            
+            # Проверяем auth_date
+            if 'auth_date' in parsed:
+                try:
+                    from datetime import datetime, timezone
+                    auth_ts = int(parsed['auth_date'])
+                    auth_date = datetime.fromtimestamp(auth_ts, timezone.utc)
+                    now = datetime.now(timezone.utc)
+                    age = now - auth_date
+                    debug_info["auth_date"] = auth_date.isoformat()
+                    debug_info["auth_age_seconds"] = int(age.total_seconds())
+                    debug_info["auth_age_hours"] = round(age.total_seconds() / 3600, 2)
+                except:
+                    pass
+            
+            # Проверяем user данные
+            if 'user' in parsed:
+                try:
+                    user_json = json.loads(parsed['user'])
+                    debug_info["user_in_init_data"] = {
+                        "id": user_json.get('id'),
+                        "first_name": user_json.get('first_name'),
+                        "username": user_json.get('username'),
+                        "language_code": user_json.get('language_code')
+                    }
+                except:
+                    debug_info["user_parse_error"] = True
+                    
+        except Exception as e:
+            debug_info["parse_error"] = str(e)
+    
     # Не показываем содержимое init_data в продакшене
     if os.getenv("DEBUG", "false").lower() == "true":
         debug_info["init_data_preview"] = init_data[:200] if init_data else None
@@ -521,9 +592,13 @@ def debug_auth():
     debug_info["verification_success"] = user is not None
     
     if user:
-        debug_info["user_id"] = user.get('id')
-        debug_info["user_name"] = user.get('first_name')
-        debug_info["user_username"] = user.get('username')
+        debug_info["verified_user"] = {
+            "id": user.get('id'),
+            "first_name": user.get('first_name'),
+            "username": user.get('username')
+        }
+    else:
+        debug_info["verification_failed_reason"] = "Смотрите логи сервера для деталей"
     
     return jsonify(debug_info)
 
