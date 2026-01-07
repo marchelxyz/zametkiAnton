@@ -197,8 +197,19 @@ def create_note(user_id: int, title: str, content: str = "") -> Note:
         db.add(note)
         db.commit()
         db.refresh(note)
+        
+        # Проверяем, что ID получен
+        if not note.id:
+            print(f"[DB] ВНИМАНИЕ: create_note - после commit note.id = {note.id}")
+        else:
+            print(f"[DB] create_note - успешно создана заметка id={note.id} для user_id={user_id}")
+        
         db.expunge(note)  # Отвязываем объект от сессии
         return note
+    except Exception as e:
+        print(f"[DB] create_note - ошибка: {e}")
+        db.rollback()
+        raise
     finally:
         db.close()
 
@@ -277,8 +288,19 @@ def create_task(user_id: int, title: str, description: str = "", interval_minute
         db.add(task)
         db.commit()
         db.refresh(task)
+        
+        # Проверяем, что ID получен
+        if not task.id:
+            print(f"[DB] ВНИМАНИЕ: create_task - после commit task.id = {task.id}")
+        else:
+            print(f"[DB] create_task - успешно создана задача id={task.id} для user_id={user_id}")
+        
         db.expunge(task)  # Отвязываем объект от сессии
         return task
+    except Exception as e:
+        print(f"[DB] create_task - ошибка: {e}")
+        db.rollback()
+        raise
     finally:
         db.close()
 
@@ -496,6 +518,7 @@ def create_or_update_session(user_id: int, first_name: str = None, username: str
                 existing_session.username = username
             db.commit()
             token = existing_session.session_token
+            print(f"[DB] create_or_update_session - обновлена существующая сессия для user_id={user_id}")
             return token
         
         # Создаём новую сессию
@@ -509,7 +532,12 @@ def create_or_update_session(user_id: int, first_name: str = None, username: str
         )
         db.add(new_session)
         db.commit()
+        print(f"[DB] create_or_update_session - создана новая сессия для user_id={user_id}, token: {session_token[:16]}...")
         return session_token
+    except Exception as e:
+        print(f"[DB] create_or_update_session - ошибка: {e}")
+        db.rollback()
+        raise
     finally:
         db.close()
 
@@ -520,6 +548,7 @@ def get_user_by_session_token(session_token: str) -> dict:
     Возвращает dict с данными пользователя или None если сессия невалидна.
     """
     if not session_token or len(session_token) < 32:
+        print(f"[DB] get_user_by_session_token - токен невалиден (длина: {len(session_token) if session_token else 0})")
         return None
     
     db = get_new_session()
@@ -530,11 +559,14 @@ def get_user_by_session_token(session_token: str) -> dict:
         ).first()
         
         if not session:
+            print(f"[DB] get_user_by_session_token - сессия не найдена (токен: {session_token[:16]}...)")
             return None
         
         # Обновляем время последнего использования
         session.last_used_at = moscow_now()
         db.commit()
+        
+        print(f"[DB] get_user_by_session_token - ✓ найден user_id={session.user_id}")
         
         # Возвращаем данные пользователя в формате, совместимом с Telegram initData
         return {
@@ -542,6 +574,9 @@ def get_user_by_session_token(session_token: str) -> dict:
             "first_name": session.first_name or "",
             "username": session.username or ""
         }
+    except Exception as e:
+        print(f"[DB] get_user_by_session_token - ошибка: {e}")
+        return None
     finally:
         db.close()
 

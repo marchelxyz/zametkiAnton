@@ -496,6 +496,11 @@ def api_get_notes():
 @app.route('/api/notes', methods=['POST'])
 def api_create_note():
     """Создать новую заметку"""
+    # Получаем заголовки для логирования
+    init_data_present = bool(request.headers.get('X-Telegram-Init-Data', ''))
+    session_token_present = bool(request.headers.get('X-Session-Token', ''))
+    print(f"[API] /api/notes POST - initData: {'да' if init_data_present else 'нет'}, session: {'да' if session_token_present else 'нет'}")
+    
     user = authenticate_user()
     
     if not user:
@@ -515,23 +520,28 @@ def api_create_note():
         return jsonify({"error": "Title is required"}), 400
     
     user_id = user.get('id')
-    print(f"[API] /api/notes POST - Создание заметки для user_id={user_id}, title='{title[:30]}...'")
+    print(f"[API] /api/notes POST - Создание заметки для user_id={user_id}, title='{title[:30] if len(title) > 30 else title}'")
     
     try:
         note = create_note(user_id, title, content)
-        print(f"[API] /api/notes POST - Заметка создана, id={note.id}")
         
-        return jsonify({
-            "id": note.id,
-            "title": note.title,
-            "content": note.content,
-            "created_at": note.created_at.isoformat() if note.created_at else None
-        }), 201
+        if note and note.id:
+            print(f"[API] /api/notes POST - ✓ Заметка создана, id={note.id}")
+            return jsonify({
+                "id": note.id,
+                "title": note.title,
+                "content": note.content,
+                "created_at": note.created_at.isoformat() if note.created_at else None
+            }), 201
+        else:
+            print(f"[API] /api/notes POST - ✗ Заметка создана, но без ID!")
+            return jsonify({"error": "Note created but no ID returned"}), 500
+            
     except Exception as e:
-        print(f"[API] /api/notes POST - Ошибка создания: {e}")
+        print(f"[API] /api/notes POST - ✗ Ошибка создания: {e}")
         import traceback
         traceback.print_exc()
-        return jsonify({"error": "Failed to create note"}), 500
+        return jsonify({"error": f"Failed to create note: {str(e)}"}), 500
 
 
 @app.route('/api/notes/<int:note_id>', methods=['GET'])
@@ -908,6 +918,11 @@ def api_get_tasks():
 @app.route('/api/tasks', methods=['POST'])
 def api_create_task():
     """Создать новую задачу"""
+    # Получаем заголовки для логирования
+    init_data_present = bool(request.headers.get('X-Telegram-Init-Data', ''))
+    session_token_present = bool(request.headers.get('X-Session-Token', ''))
+    print(f"[API] /api/tasks POST - initData: {'да' if init_data_present else 'нет'}, session: {'да' if session_token_present else 'нет'}")
+    
     user = authenticate_user()
     
     if not user:
@@ -938,34 +953,40 @@ def api_create_task():
         interval_minutes = 60
     
     user_id = user.get('id')
-    print(f"[API] /api/tasks POST - Создание задачи для user_id={user_id}, title='{title[:30]}...'")
+    print(f"[API] /api/tasks POST - Создание задачи для user_id={user_id}, title='{title[:30] if len(title) > 30 else title}'")
     
     try:
         task = create_task(user_id, title, description, interval_minutes)
-        print(f"[API] /api/tasks POST - Задача создана, id={task.id}")
         
-        # Отправляем начальное уведомление о создании задачи
-        message = f"✅ <b>Задача создана!</b>\n\n" \
-                  f"📌 <b>{task.title}</b>\n"
-        if task.description:
-            message += f"📝 {task.description}\n"
-        message += f"\n⏰ Напоминания каждые {format_interval(interval_minutes)}"
-        send_telegram_message(user_id, message)
-        
-        return jsonify({
-            "id": task.id,
-            "title": task.title,
-            "description": task.description,
-            "interval_minutes": task.interval_minutes,
-            "is_active": task.is_active,
-            "next_notification": task.next_notification.isoformat() if task.next_notification else None,
-            "created_at": task.created_at.isoformat() if task.created_at else None
-        }), 201
+        if task and task.id:
+            print(f"[API] /api/tasks POST - ✓ Задача создана, id={task.id}")
+            
+            # Отправляем начальное уведомление о создании задачи
+            message = f"✅ <b>Задача создана!</b>\n\n" \
+                      f"📌 <b>{task.title}</b>\n"
+            if task.description:
+                message += f"📝 {task.description}\n"
+            message += f"\n⏰ Напоминания каждые {format_interval(interval_minutes)}"
+            send_telegram_message(user_id, message)
+            
+            return jsonify({
+                "id": task.id,
+                "title": task.title,
+                "description": task.description,
+                "interval_minutes": task.interval_minutes,
+                "is_active": task.is_active,
+                "next_notification": task.next_notification.isoformat() if task.next_notification else None,
+                "created_at": task.created_at.isoformat() if task.created_at else None
+            }), 201
+        else:
+            print(f"[API] /api/tasks POST - ✗ Задача создана, но без ID!")
+            return jsonify({"error": "Task created but no ID returned"}), 500
+            
     except Exception as e:
-        print(f"[API] /api/tasks POST - Ошибка создания: {e}")
+        print(f"[API] /api/tasks POST - ✗ Ошибка создания: {e}")
         import traceback
         traceback.print_exc()
-        return jsonify({"error": "Failed to create task"}), 500
+        return jsonify({"error": f"Failed to create task: {str(e)}"}), 500
 
 
 def format_interval(minutes: int) -> str:
