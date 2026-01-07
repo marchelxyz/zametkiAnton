@@ -734,6 +734,17 @@
         let isInTelegram = false;
         let currentAttachments = [];
         let cachedInitData = null;  // Кешируем initData при первом получении
+        let sessionToken = null;    // Токен сессии для авторизации через бота
+        
+        // Загружаем session_token из localStorage при старте
+        try {
+            sessionToken = localStorage.getItem('session_token');
+            if (sessionToken) {
+                console.log('[AUTH] Загружен session_token из localStorage');
+            }
+        } catch (e) {
+            console.warn('[AUTH] Не удалось загрузить session_token из localStorage:', e);
+        }
 
         // Получаем initData из разных источников (fallback)
         function extractInitData() {
@@ -921,30 +932,93 @@
             }
         }
 
-        // API вызовы
-        async function apiCall(method, endpoint, data = null) {
+        // Сохранить session_token в localStorage
+        function saveSessionToken(token) {
+            sessionToken = token;
+            try {
+                localStorage.setItem('session_token', token);
+                console.log('[AUTH] Session token сохранён в localStorage');
+            } catch (e) {
+                console.warn('[AUTH] Не удалось сохранить session_token в localStorage:', e);
+            }
+        }
+        
+        // Очистить session_token
+        function clearSessionToken() {
+            sessionToken = null;
+            try {
+                localStorage.removeItem('session_token');
+            } catch (e) {}
+        }
+        
+        // Создать сессию авторизации (вызывается при первом запуске)
+        async function createAuthSession() {
             const initData = getInitData();
             
-            // Предупреждение если initData пустая
             if (!initData) {
-                console.error('[API] ВНИМАНИЕ: Делаем запрос без initData!');
-                console.error('[API] endpoint:', endpoint);
-                console.error('[API] Это приведёт к ошибке 401');
+                console.warn('[AUTH] Нет initData для создания сессии');
+                return false;
+            }
+            
+            try {
+                console.log('[AUTH] Создаём сессию авторизации...');
+                
+                const response = await fetch('/api/auth/session', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-Telegram-Init-Data': initData
+                    }
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok && result.session_token) {
+                    saveSessionToken(result.session_token);
+                    console.log('[AUTH] ✓ Сессия создана успешно для user:', result.user?.id);
+                    return true;
+                } else {
+                    console.error('[AUTH] ✗ Не удалось создать сессию:', result.error || result.message);
+                    return false;
+                }
+            } catch (error) {
+                console.error('[AUTH] ✗ Ошибка создания сессии:', error);
+                return false;
+            }
+        }
+        
+        // API вызовы с поддержкой session_token
+        async function apiCall(method, endpoint, data = null, retryAfterReauth = true) {
+            const initData = getInitData();
+            
+            // Создаём заголовки с обоими методами авторизации
+            const headers = {
+                'Content-Type': 'application/json',
+                'X-Telegram-Init-Data': initData || ''
+            };
+            
+            // Добавляем session_token если есть
+            if (sessionToken) {
+                headers['X-Session-Token'] = sessionToken;
+            }
+            
+            // Предупреждение если нет ни initData, ни session_token
+            if (!initData && !sessionToken) {
+                console.warn('[API] ВНИМАНИЕ: Нет ни initData, ни session_token');
             }
             
             const options = {
                 method: method,
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-Telegram-Init-Data': initData
-                }
+                headers: headers
             };
 
             if (data) {
                 options.body = JSON.stringify(data);
             }
 
-            console.log('[API]', method, endpoint, 'initData length:', initData.length);
+            console.log('[API]', method, endpoint, 
+                        'initData:', initData ? initData.length + 'b' : 'нет', 
+                        'session:', sessionToken ? 'есть' : 'нет');
             
             let response;
             let result;
@@ -969,14 +1043,22 @@
                 
                 // Специальная обработка ошибки авторизации
                 if (response.status === 401) {
-                    errorMessage = 'Ошибка авторизации. Пожалуйста, закройте и заново откройте приложение через Telegram.';
                     console.error('[API] Ошибка 401 (Unauthorized)');
-                    console.error('[API] initData length:', initData.length);
-                    console.error('[API] initData preview:', initData.substring(0, 50));
-                    console.error('[API] Возможные причины:');
-                    console.error('[API] 1. Приложение открыто вне Telegram');
-                    console.error('[API] 2. initData не передана в заголовке');
-                    console.error('[API] 3. initData устарела или некорректна');
+                    
+                    // Если нужна переавторизация и есть initData - пробуем создать новую сессию
+                    if (result.need_reauth && retryAfterReauth && initData) {
+                        console.log('[API] Пробуем переавторизоваться...');
+                        clearSessionToken();
+                        
+                        const reauthSuccess = await createAuthSession();
+                        if (reauthSuccess) {
+                            console.log('[API] Переавторизация успешна, повторяем запрос...');
+                            // Повторяем запрос с новым токеном (без повторной переавторизации)
+                            return apiCall(method, endpoint, data, false);
+                        }
+                    }
+                    
+                    errorMessage = 'Ошибка авторизации. Пожалуйста, закройте и заново откройте приложение через Telegram.';
                 }
                 
                 throw new Error(errorMessage);
@@ -1277,7 +1359,16 @@
             
             const initData = getInitData();
             
-            if (!initData) {
+            // Создаём заголовки с обоими методами авторизации
+            const headers = {
+                'X-Telegram-Init-Data': initData || ''
+            };
+            
+            if (sessionToken) {
+                headers['X-Session-Token'] = sessionToken;
+            }
+            
+            if (!initData && !sessionToken) {
                 throw new Error('Ошибка авторизации');
             }
             
@@ -1285,9 +1376,7 @@
             try {
                 response = await fetch(`/api/notes/${currentNoteId}/attachments`, {
                     method: 'POST',
-                    headers: {
-                        'X-Telegram-Init-Data': initData
-                    },
+                    headers: headers,
                     body: formData
                 });
             } catch (networkError) {
@@ -1336,11 +1425,18 @@
             const doDelete = async () => {
                 try {
                     const initData = getInitData();
+                    
+                    // Создаём заголовки с обоими методами авторизации
+                    const headers = {
+                        'X-Telegram-Init-Data': initData || ''
+                    };
+                    if (sessionToken) {
+                        headers['X-Session-Token'] = sessionToken;
+                    }
+                    
                     const response = await fetch(`/api/attachments/${attachmentId}`, {
                         method: 'DELETE',
-                        headers: {
-                            'X-Telegram-Init-Data': initData
-                        }
+                        headers: headers
                     });
                     
                     if (!response.ok) {
@@ -1767,16 +1863,26 @@
         const MAX_INIT_ATTEMPTS = 5;  // Увеличено для надёжности
         const INIT_DELAY_MS = 300;    // Увеличена задержка
         
-        function initApp() {
+        async function initApp() {
             initAttempts++;
             console.log(`[INIT] Попытка инициализации ${initAttempts}/${MAX_INIT_ATTEMPTS}`);
+            console.log(`[INIT] session_token: ${sessionToken ? 'есть' : 'нет'}`);
             
             const inTelegram = checkTelegramEnvironment();
             
+            // Если есть session_token - можем работать даже без initData
+            if (sessionToken) {
+                console.log('[INIT] Есть session_token, продолжаем работу');
+                loadNotesWithAuth();
+                return;
+            }
+            
             if (inTelegram) {
                 console.log('[INIT] Успешная инициализация в Telegram');
+                // Создаём сессию для надёжной авторизации
+                await createAuthSession();
                 // Загружаем заметки при старте
-                loadNotes();
+                loadNotesWithAuth();
                 return;
             }
             
@@ -1793,15 +1899,38 @@
             tryLoadWithoutVerification();
         }
         
+        // Загрузка заметок с автоматической авторизацией
+        async function loadNotesWithAuth() {
+            try {
+                await loadNotes();
+            } catch (error) {
+                console.error('[INIT] Ошибка загрузки заметок:', error);
+                // Если ошибка авторизации и есть initData - пробуем переавторизоваться
+                if (error.message && error.message.includes('авторизац')) {
+                    const initData = getInitData();
+                    if (initData) {
+                        console.log('[INIT] Пробуем создать новую сессию...');
+                        clearSessionToken();
+                        const success = await createAuthSession();
+                        if (success) {
+                            await loadNotes();
+                            return;
+                        }
+                    }
+                }
+                showNotInTelegramWarning();
+            }
+        }
+        
         // Попытка загрузки данных даже без initData (для режима отладки на сервере)
         async function tryLoadWithoutVerification() {
             try {
-                console.log('[INIT] Пробуем загрузить заметки без верифицированной initData...');
+                console.log('[INIT] Пробуем загрузить заметки...');
                 const result = await apiCall('GET', '/api/notes');
                 
-                // Если запрос успешен - сервер в режиме отладки, работаем
+                // Если запрос успешен - работаем
                 if (result && result.notes !== undefined) {
-                    console.log('[INIT] Сервер вернул данные (вероятно DEBUG режим)');
+                    console.log('[INIT] Сервер вернул данные');
                     notes = result.notes || [];
                     renderNotes();
                     return;
