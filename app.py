@@ -505,6 +505,256 @@ def health():
     return jsonify({"status": "ok"})
 
 
+# ==================== Webhook для Telegram бота ====================
+
+def get_webapp_url():
+    """Получить URL веб-приложения"""
+    # Пробуем получить URL из переменных окружения
+    webapp_url = os.getenv("WEBAPP_URL", "")
+    if webapp_url:
+        return webapp_url
+    
+    # Если RAILWAY_PUBLIC_DOMAIN задан (Railway)
+    railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "")
+    if railway_domain:
+        return f"https://{railway_domain}"
+    
+    # Fallback для локальной разработки
+    return os.getenv("BASE_URL", "http://localhost:5000")
+
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    """Обработка входящих сообщений от Telegram"""
+    if not BOT_TOKEN:
+        return jsonify({"ok": True})
+    
+    try:
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({"ok": True})
+        
+        # Обрабатываем сообщение
+        message = data.get('message')
+        if message:
+            chat_id = message.get('chat', {}).get('id')
+            text = message.get('text', '')
+            user = message.get('from', {})
+            first_name = user.get('first_name', 'Пользователь')
+            
+            if chat_id:
+                # Обработка команды /start
+                if text.startswith('/start'):
+                    handle_start_command(chat_id, first_name)
+                # Обработка команды /help
+                elif text.startswith('/help'):
+                    handle_help_command(chat_id)
+                # Обработка других сообщений
+                else:
+                    handle_default_message(chat_id)
+        
+        # Обрабатываем callback query (inline кнопки)
+        callback_query = data.get('callback_query')
+        if callback_query:
+            callback_id = callback_query.get('id')
+            chat_id = callback_query.get('message', {}).get('chat', {}).get('id')
+            callback_data = callback_query.get('data', '')
+            
+            # Отвечаем на callback
+            answer_callback_query(callback_id)
+            
+            if callback_data == 'open_app' and chat_id:
+                send_app_button(chat_id)
+        
+        return jsonify({"ok": True})
+    
+    except Exception as e:
+        print(f"[ERROR] Ошибка обработки webhook: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"ok": True})
+
+
+def handle_start_command(chat_id: int, first_name: str):
+    """Обработка команды /start"""
+    webapp_url = get_webapp_url()
+    
+    welcome_text = f"""👋 Привет, {first_name}!
+
+📝 <b>Заметки и Задачи</b> — ваш персональный помощник для организации дел.
+
+✨ <b>Возможности:</b>
+• Создавайте заметки с вложениями
+• Устанавливайте периодические напоминания
+• Получайте уведомления прямо в Telegram
+
+👇 Нажмите кнопку ниже, чтобы открыть приложение:"""
+    
+    # Отправляем сообщение с кнопкой Web App
+    send_message_with_webapp_button(chat_id, welcome_text, "📱 Открыть приложение", webapp_url)
+
+
+def handle_help_command(chat_id: int):
+    """Обработка команды /help"""
+    help_text = """📚 <b>Справка</b>
+
+<b>Заметки:</b>
+• Создавайте заметки с заголовком и текстом
+• Прикрепляйте фото и документы
+• Редактируйте и удаляйте заметки
+
+<b>Задачи с напоминаниями:</b>
+• Создавайте задачи с периодическими напоминаниями
+• Настраивайте интервал: минуты, часы или дни
+• Включайте/выключайте уведомления
+
+<b>Команды:</b>
+/start — Главное меню
+/help — Эта справка
+
+💡 Все данные сохраняются автоматически."""
+    
+    webapp_url = get_webapp_url()
+    send_message_with_webapp_button(chat_id, help_text, "📱 Открыть приложение", webapp_url)
+
+
+def handle_default_message(chat_id: int):
+    """Обработка обычных сообщений"""
+    webapp_url = get_webapp_url()
+    text = "👆 Используйте кнопку ниже, чтобы открыть приложение, или отправьте /help для справки."
+    send_message_with_webapp_button(chat_id, text, "📱 Открыть приложение", webapp_url)
+
+
+def send_message_with_webapp_button(chat_id: int, text: str, button_text: str, webapp_url: str) -> bool:
+    """Отправить сообщение с кнопкой Web App"""
+    if not BOT_TOKEN:
+        print(f"[DEBUG] BOT_TOKEN не задан")
+        return False
+    
+    try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "HTML",
+            "reply_markup": {
+                "inline_keyboard": [
+                    [
+                        {
+                            "text": button_text,
+                            "web_app": {"url": webapp_url}
+                        }
+                    ]
+                ]
+            }
+        }
+        response = requests.post(url, json=payload, timeout=10)
+        result = response.json()
+        
+        if result.get("ok"):
+            print(f"[OK] Сообщение с Web App кнопкой отправлено: {chat_id}")
+            return True
+        else:
+            print(f"[ERROR] Ошибка отправки: {result}")
+            return False
+    except Exception as e:
+        print(f"[ERROR] Исключение при отправке: {e}")
+        return False
+
+
+def answer_callback_query(callback_id: str):
+    """Ответить на callback query"""
+    if not BOT_TOKEN:
+        return
+    
+    try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery"
+        requests.post(url, json={"callback_query_id": callback_id}, timeout=5)
+    except Exception as e:
+        print(f"[ERROR] Ошибка ответа на callback: {e}")
+
+
+def send_app_button(chat_id: int):
+    """Отправить кнопку для открытия приложения"""
+    webapp_url = get_webapp_url()
+    send_message_with_webapp_button(
+        chat_id, 
+        "👇 Нажмите кнопку, чтобы открыть приложение:",
+        "📱 Открыть приложение",
+        webapp_url
+    )
+
+
+@app.route('/api/set-webhook', methods=['POST'])
+def api_set_webhook():
+    """Установить webhook для бота"""
+    if not BOT_TOKEN:
+        return jsonify({"error": "BOT_TOKEN не настроен"}), 400
+    
+    webapp_url = get_webapp_url()
+    webhook_url = f"{webapp_url}/webhook"
+    
+    try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook"
+        payload = {
+            "url": webhook_url,
+            "allowed_updates": ["message", "callback_query"]
+        }
+        response = requests.post(url, json=payload, timeout=10)
+        result = response.json()
+        
+        if result.get("ok"):
+            print(f"[OK] Webhook установлен: {webhook_url}")
+            return jsonify({
+                "success": True,
+                "webhook_url": webhook_url,
+                "result": result
+            })
+        else:
+            print(f"[ERROR] Ошибка установки webhook: {result}")
+            return jsonify({
+                "success": False,
+                "error": result.get("description", "Unknown error"),
+                "result": result
+            }), 400
+    except Exception as e:
+        print(f"[ERROR] Исключение при установке webhook: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/webhook-info', methods=['GET'])
+def api_webhook_info():
+    """Получить информацию о текущем webhook"""
+    if not BOT_TOKEN:
+        return jsonify({"error": "BOT_TOKEN не настроен"}), 400
+    
+    try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/getWebhookInfo"
+        response = requests.get(url, timeout=10)
+        result = response.json()
+        
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/delete-webhook', methods=['POST'])
+def api_delete_webhook():
+    """Удалить webhook"""
+    if not BOT_TOKEN:
+        return jsonify({"error": "BOT_TOKEN не настроен"}), 400
+    
+    try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook"
+        response = requests.post(url, timeout=10)
+        result = response.json()
+        
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route('/api/debug/auth', methods=['GET'])
 def debug_auth():
     """Диагностика авторизации (только для отладки)"""
@@ -774,6 +1024,59 @@ if not scheduler.running:
 
 # Регистрируем остановку планировщика при выходе
 atexit.register(lambda: scheduler.shutdown(wait=False) if scheduler.running else None)
+
+
+def auto_setup_webhook():
+    """Автоматическая настройка webhook при запуске"""
+    auto_set = os.getenv("AUTO_SET_WEBHOOK", "true").lower() == "true"
+    
+    if not auto_set:
+        print("[INFO] Автоматическая настройка webhook отключена (AUTO_SET_WEBHOOK=false)")
+        return
+    
+    if not BOT_TOKEN:
+        print("[INFO] BOT_TOKEN не задан, пропускаем настройку webhook")
+        return
+    
+    webapp_url = get_webapp_url()
+    if not webapp_url or webapp_url.startswith("http://localhost"):
+        print(f"[INFO] Пропускаем настройку webhook для локального URL: {webapp_url}")
+        return
+    
+    webhook_url = f"{webapp_url}/webhook"
+    
+    try:
+        # Проверяем текущий webhook
+        info_url = f"https://api.telegram.org/bot{BOT_TOKEN}/getWebhookInfo"
+        info_response = requests.get(info_url, timeout=10)
+        info_result = info_response.json()
+        
+        current_url = info_result.get("result", {}).get("url", "")
+        
+        if current_url == webhook_url:
+            print(f"[OK] Webhook уже настроен: {webhook_url}")
+            return
+        
+        # Устанавливаем новый webhook
+        set_url = f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook"
+        payload = {
+            "url": webhook_url,
+            "allowed_updates": ["message", "callback_query"]
+        }
+        response = requests.post(set_url, json=payload, timeout=10)
+        result = response.json()
+        
+        if result.get("ok"):
+            print(f"[OK] Webhook автоматически установлен: {webhook_url}")
+        else:
+            print(f"[ERROR] Не удалось установить webhook: {result.get('description')}")
+    
+    except Exception as e:
+        print(f"[ERROR] Ошибка при автоматической настройке webhook: {e}")
+
+
+# Автоматическая настройка webhook
+auto_setup_webhook()
 
 
 if __name__ == '__main__':
