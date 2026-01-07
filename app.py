@@ -20,6 +20,9 @@ from database import (
     create_attachment, get_attachments_by_note, get_attachment_by_id, delete_attachment,
     get_note_with_attachments
 )
+from storage import (
+    is_gcs_available, generate_gcs_path, upload_to_gcs, download_from_gcs, delete_from_gcs
+)
 
 # Загружаем переменные окружения
 load_dotenv()
@@ -474,7 +477,7 @@ def api_delete_note(note_id):
 
 @app.route('/api/notes/<int:note_id>/attachments', methods=['POST'])
 def api_upload_attachment(note_id):
-    """Загрузить вложение к заметке"""
+    """Загрузить вложение к заметке (в Google Cloud Storage или БД как fallback)"""
     init_data = request.headers.get('X-Telegram-Init-Data', '')
     user = verify_telegram_data(init_data)
     
@@ -515,14 +518,38 @@ def api_upload_attachment(note_id):
     # Определяем MIME тип
     mime_type = file.content_type
     
-    # Создаём запись в БД с бинарными данными
+    # Пробуем загрузить в Google Cloud Storage
+    gcs_path = None
+    file_data_for_db = None
+    
+    if is_gcs_available():
+        # Генерируем путь в GCS
+        gcs_path = generate_gcs_path(user_id, note_id, original_filename)
+        
+        # Загружаем в GCS
+        success, result = upload_to_gcs(file_data, gcs_path, mime_type or 'application/octet-stream')
+        
+        if success:
+            print(f"[UPLOAD] Файл загружен в GCS: {gcs_path}")
+        else:
+            # Если GCS не сработал, сохраняем в БД
+            print(f"[UPLOAD] Ошибка GCS, сохраняем в БД: {result}")
+            gcs_path = None
+            file_data_for_db = file_data
+    else:
+        # GCS недоступен, сохраняем в БД
+        print("[UPLOAD] GCS недоступен, сохраняем в БД")
+        file_data_for_db = file_data
+    
+    # Создаём запись в БД
     attachment = create_attachment(
         note_id=note_id,
         filename=original_filename,
         file_type=file_type,
-        file_data=file_data,
+        file_data=file_data_for_db,
         mime_type=mime_type,
-        file_size=file_size
+        file_size=file_size,
+        gcs_path=gcs_path
     )
     
     return jsonify({
@@ -536,7 +563,7 @@ def api_upload_attachment(note_id):
 
 @app.route('/api/attachments/<int:attachment_id>', methods=['GET'])
 def api_get_attachment(attachment_id):
-    """Скачать вложение"""
+    """Скачать вложение (из Google Cloud Storage или БД)"""
     init_data = request.headers.get('X-Telegram-Init-Data', '')
     user = verify_telegram_data(init_data)
     
@@ -555,24 +582,41 @@ def api_get_attachment(attachment_id):
     if not note:
         return jsonify({"error": "Attachment not found"}), 404
     
+    # Пробуем получить файл из GCS (приоритетно)
+    file_data = None
+    content_type = attachment.mime_type or 'application/octet-stream'
+    
+    if attachment.gcs_path:
+        # Файл хранится в Google Cloud Storage
+        success, data, result_type = download_from_gcs(attachment.gcs_path)
+        if success:
+            file_data = data
+            content_type = result_type
+        else:
+            print(f"[DOWNLOAD] Ошибка GCS: {result_type}, пробуем БД")
+    
+    # Fallback: файл в БД
+    if file_data is None and attachment.file_data:
+        file_data = attachment.file_data
+    
     # Проверяем наличие данных файла
-    if not attachment.file_data:
+    if file_data is None:
         return jsonify({"error": "File data not found"}), 404
     
-    # Возвращаем файл из БД
+    # Возвращаем файл
     from flask import Response
     response = Response(
-        attachment.file_data,
-        mimetype=attachment.mime_type or 'application/octet-stream'
+        file_data,
+        mimetype=content_type
     )
     response.headers['Content-Disposition'] = f'inline; filename="{attachment.filename}"'
-    response.headers['Content-Length'] = len(attachment.file_data)
+    response.headers['Content-Length'] = len(file_data)
     return response
 
 
 @app.route('/api/attachments/<int:attachment_id>', methods=['DELETE'])
 def api_delete_attachment(attachment_id):
-    """Удалить вложение"""
+    """Удалить вложение (из Google Cloud Storage и БД)"""
     init_data = request.headers.get('X-Telegram-Init-Data', '')
     user = verify_telegram_data(init_data)
     
@@ -591,7 +635,11 @@ def api_delete_attachment(attachment_id):
     if not note:
         return jsonify({"error": "Attachment not found"}), 404
     
-    # Удаляем запись из БД (файл хранится в БД, так что удаление записи удалит и данные)
+    # Удаляем файл из GCS если он там хранится
+    if attachment.gcs_path:
+        delete_from_gcs(attachment.gcs_path)
+    
+    # Удаляем запись из БД
     delete_attachment(attachment_id)
     
     return jsonify({"success": True})
