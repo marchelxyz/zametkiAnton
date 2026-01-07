@@ -242,5 +242,5 @@ def delete_note_files(user_id: int, note_id: int) -> bool:
         return False
 
 
-# GCS инициализируется лениво при первом вызове is_gcs_available()
-# Не вызываем _init_gcs() при импорте модуля, чтобы избежать блокировки при gunicorn preload
+# Инициализируем GCS при импорте модуля
+_init_gcs()

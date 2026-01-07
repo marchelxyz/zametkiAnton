@@ -12,10 +12,7 @@ from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
 from apscheduler.schedulers.background import BackgroundScheduler
 from nacl.signing import SigningKey
-try:
-    from nacl.exceptions import BadSignature
-except ImportError:
-    from nacl.exceptions import BadSignatureError as BadSignature
+from nacl.exceptions import BadSignature
 from database import (
     init_db, create_note, get_notes_by_user, get_note_by_id, update_note, delete_note,
     create_task, get_tasks_by_user, get_task_by_id, update_task, delete_task,
@@ -650,16 +647,8 @@ def api_delete_attachment(attachment_id):
 
 @app.route('/health')
 def health():
-    """Health check для Railway - отвечает всегда, независимо от состояния инициализации"""
-    status = {
-        "status": "ok",
-        "initialized": _initialized
-    }
-    
-    if _initialization_error:
-        status["init_error"] = _initialization_error
-    
-    return jsonify(status)
+    """Health check для Railway"""
+    return jsonify({"status": "ok"})
 
 
 @app.route('/api/debug/auth', methods=['GET'])
@@ -979,75 +968,18 @@ def api_toggle_task(task_id):
     })
 
 
-# Флаг инициализации для избежания повторной инициализации
-_initialized = False
-_initialization_error = None
+# Инициализация базы данных при загрузке модуля (работает и с gunicorn)
+init_db()
 
-
-def initialize_app():
-    """
-    Ленивая инициализация приложения.
-    Вызывается при первом запросе или явно из gunicorn post_fork.
-    """
-    global _initialized, _initialization_error
-    
-    if _initialized:
-        return True
-    
-    try:
-        # Инициализация базы данных
-        print("[INIT] Инициализация базы данных...")
-        init_db()
-        
-        # Запуск планировщика для проверки уведомлений каждую минуту
-        # Проверяем, не запущен ли уже планировщик
-        if not scheduler.running:
-            scheduler.add_job(
-                func=check_and_send_notifications, 
-                trigger="interval", 
-                minutes=1, 
-                id="notification_checker", 
-                replace_existing=True
-            )
-            scheduler.start()
-            print("[INIT] Планировщик уведомлений запущен!")
-        
-        _initialized = True
-        print("[INIT] Приложение успешно инициализировано!")
-        return True
-        
-    except Exception as e:
-        _initialization_error = str(e)
-        print(f"[INIT] Ошибка инициализации: {e}")
-        import traceback
-        traceback.print_exc()
-        # Помечаем как инициализированное, чтобы не повторять попытки
-        _initialized = True
-        return False
-
-
-@app.before_request
-def ensure_initialized():
-    """Убедиться, что приложение инициализировано перед обработкой запросов"""
-    # Не блокируем health check
-    if request.path == '/health':
-        return None
-    
-    if not _initialized:
-        initialize_app()
-    
-    return None
-
+# Запуск планировщика для проверки уведомлений каждую минуту
+# Проверяем, не запущен ли уже планировщик (для избежания дублирования при перезагрузке)
+if not scheduler.running:
+    scheduler.add_job(func=check_and_send_notifications, trigger="interval", minutes=1, id="notification_checker", replace_existing=True)
+    scheduler.start()
+    print("[INFO] Планировщик уведомлений запущен!")
 
 # Регистрируем остановку планировщика при выходе
 atexit.register(lambda: scheduler.shutdown(wait=False) if scheduler.running else None)
-
-
-# Функция для вызова из gunicorn post_fork хука
-def post_fork_init(server=None, worker=None):
-    """Вызывается из gunicorn post_fork для инициализации в каждом воркере"""
-    print(f"[INIT] Post-fork инициализация воркера...")
-    initialize_app()
 
 
 if __name__ == '__main__':
