@@ -1,5 +1,5 @@
 import os
-from sqlalchemy import create_engine, Column, Integer, BigInteger, String, Text, DateTime, Boolean, ForeignKey
+from sqlalchemy import create_engine, Column, Integer, BigInteger, String, Text, DateTime, Boolean, ForeignKey, LargeBinary
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime, timezone, timedelta
@@ -64,10 +64,11 @@ class Attachment(Base):
     id = Column(Integer, primary_key=True, index=True)
     note_id = Column(Integer, ForeignKey("notes.id", ondelete="CASCADE"), nullable=False, index=True)
     filename = Column(String(255), nullable=False)  # Оригинальное имя файла
-    stored_filename = Column(String(255), nullable=False)  # Имя файла в хранилище
+    stored_filename = Column(String(255), nullable=True)  # Устаревшее поле, оставлено для совместимости
     file_type = Column(String(50), nullable=False)  # Тип файла (image/document)
     mime_type = Column(String(100), nullable=True)  # MIME тип
     file_size = Column(Integer, nullable=True)  # Размер в байтах
+    file_data = Column(LargeBinary, nullable=True)  # Бинарные данные файла (хранение в БД)
     created_at = Column(DateTime, default=moscow_now)
     
     # Связь с заметкой
@@ -92,6 +93,27 @@ class Task(Base):
 def init_db():
     """Инициализация базы данных - создание таблиц"""
     Base.metadata.create_all(bind=engine)
+    
+    # Миграция: добавление столбца file_data если его нет
+    try:
+        from sqlalchemy import inspect, text
+        inspector = inspect(engine)
+        
+        if 'attachments' in inspector.get_table_names():
+            columns = [col['name'] for col in inspector.get_columns('attachments')]
+            
+            if 'file_data' not in columns:
+                print("[DB] Миграция: добавление столбца file_data...")
+                with engine.connect() as conn:
+                    if DATABASE_URL.startswith("postgresql"):
+                        conn.execute(text("ALTER TABLE attachments ADD COLUMN file_data BYTEA"))
+                    else:
+                        conn.execute(text("ALTER TABLE attachments ADD COLUMN file_data BLOB"))
+                    conn.commit()
+                print("[DB] Миграция успешно завершена!")
+    except Exception as e:
+        print(f"[DB] Предупреждение при миграции: {e}")
+    
     print("База данных инициализирована!")
 
 
@@ -297,18 +319,19 @@ def update_task_next_notification(task_id: int) -> Task:
 
 
 # Функции для работы с вложениями
-def create_attachment(note_id: int, filename: str, stored_filename: str, 
-                      file_type: str, mime_type: str = None, file_size: int = None) -> Attachment:
-    """Создать новое вложение"""
+def create_attachment(note_id: int, filename: str, file_type: str, 
+                      file_data: bytes, mime_type: str = None, file_size: int = None) -> Attachment:
+    """Создать новое вложение с бинарными данными"""
     db = SessionLocal()
     try:
         attachment = Attachment(
             note_id=note_id,
             filename=filename,
-            stored_filename=stored_filename,
+            stored_filename=None,  # Больше не используется
             file_type=file_type,
             mime_type=mime_type,
-            file_size=file_size
+            file_size=file_size,
+            file_data=file_data  # Храним данные в БД
         )
         db.add(attachment)
         db.commit()
