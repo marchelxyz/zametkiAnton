@@ -363,12 +363,12 @@ def verify_telegram_data(init_data: str, session_token: str = None) -> dict:
         sorted_items = sorted(parsed_data_raw.items())
         data_check_string = '\n'.join(f"{k}={v}" for k, v in sorted_items)
         
-        # Отладочное логирование для диагностики
-        if not received_signature or not received_hash:
-            print(f"[AUTH] Отладка data_check_string:")
-            print(f"[AUTH]   - Количество полей: {len(sorted_items)}")
-            print(f"[AUTH]   - Порядок полей: {[k for k, v in sorted_items]}")
-            print(f"[AUTH]   - Первые 200 символов: {data_check_string[:200]}")
+        # Отладочное логирование для диагностики (всегда включаем для отладки)
+        print(f"[AUTH] Отладка data_check_string:")
+        print(f"[AUTH]   - Количество полей: {len(sorted_items)}")
+        print(f"[AUTH]   - Порядок полей: {[k for k, v in sorted_items]}")
+        print(f"[AUTH]   - Первые 200 символов: {data_check_string[:200]}")
+        print(f"[AUTH]   - Полная строка (repr): {repr(data_check_string)}")
         
         # Проверяем подпись в зависимости от формата
         # Пробуем оба метода если первый не сработал
