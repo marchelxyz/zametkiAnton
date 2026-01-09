@@ -2147,10 +2147,10 @@
             }
         }
 
-        // Инициализация приложения с несколькими попытками
+        // Инициализация приложения с автоматической авторизацией
         let initAttempts = 0;
-        const MAX_INIT_ATTEMPTS = 5;  // Увеличено для надёжности
-        const INIT_DELAY_MS = 300;    // Увеличена задержка
+        const MAX_INIT_ATTEMPTS = 3;  // Уменьшено - авторизация должна быть быстрой
+        const INIT_DELAY_MS = 200;    // Уменьшена задержка
         
         async function initApp() {
             initAttempts++;
@@ -2158,6 +2158,7 @@
             console.log(`[INIT] session_token: ${sessionToken ? 'есть' : 'нет'}`);
             console.log(`[INIT] web_access_token: ${webAccessToken ? 'есть' : 'нет'}`);
             console.log(`[INIT] cached_init_data: ${cachedInitData ? cachedInitData.length + 'b' : 'нет'}`);
+            console.log(`[INIT] tg.initDataUnsafe.user:`, tg.initDataUnsafe?.user ? JSON.stringify(tg.initDataUnsafe.user) : 'нет');
             
             // Приоритет 1: Веб-токен (если был сохранён ранее)
             if (webAccessToken) {
@@ -2175,25 +2176,50 @@
                 }
             }
             
-            const inTelegram = checkTelegramEnvironment();
-            
-            // Приоритет 2: Session token (Telegram)
+            // Приоритет 2: Session token (Telegram) - если есть, сразу загружаем данные
             if (sessionToken) {
-                console.log('[INIT] Есть session_token, пробуем загрузить данные...');
-                await loadNotesWithAuth();
-                return;
+                console.log('[INIT] Есть session_token, автоматически загружаем данные...');
+                try {
+                    await loadNotes();
+                    return;
+                } catch (error) {
+                    console.warn('[INIT] Ошибка загрузки с session_token, пробуем переавторизоваться...');
+                    clearSessionToken();
+                }
             }
             
-            // Приоритет 3: Есть свежая initData от Telegram SDK - создаём сессию
-            if (inTelegram && (tg.initData || cachedInitData)) {
-                console.log('[INIT] Успешная инициализация в Telegram');
-                // Создаём сессию для надёжной авторизации
+            // Приоритет 3: Автоматическая авторизация через Telegram initData
+            // Проверяем наличие initData (проверенная) или initDataUnsafe (непроверенная, но доступна сразу)
+            const initData = extractInitData();
+            const hasInitData = initData && initData.length > 0;
+            const hasUnsafeUser = tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.id;
+            
+            if (hasInitData) {
+                console.log('[INIT] ✓ Найдена initData, автоматически авторизуем пользователя...');
+                // Автоматически создаём сессию при первом запуске
                 const sessionCreated = await createAuthSession();
                 if (sessionCreated) {
-                    console.log('[INIT] Сессия создана успешно');
+                    console.log('[INIT] ✓ Сессия создана автоматически');
                 }
-                // Загружаем заметки при старте
-                await loadNotesWithAuth();
+                // Загружаем данные сразу
+                try {
+                    await loadNotes();
+                    return;
+                } catch (error) {
+                    console.error('[INIT] Ошибка загрузки после авторизации:', error);
+                    // Если ошибка авторизации - пробуем ещё раз
+                    if (error.message && (error.message.includes('авторизац') || error.message.includes('401'))) {
+                        clearSessionToken();
+                        if (initAttempts < MAX_INIT_ATTEMPTS) {
+                            setTimeout(initApp, INIT_DELAY_MS);
+                            return;
+                        }
+                    }
+                }
+            } else if (hasUnsafeUser && initAttempts < MAX_INIT_ATTEMPTS) {
+                // initDataUnsafe доступна, но initData ещё нет - ждём немного
+                console.log(`[INIT] initDataUnsafe.user доступен, но initData ещё нет. Ждём... (попытка ${initAttempts}/${MAX_INIT_ATTEMPTS})`);
+                setTimeout(initApp, INIT_DELAY_MS);
                 return;
             }
             
@@ -2209,42 +2235,6 @@
             showNotInTelegramWarning();
         }
         
-        // Загрузка заметок с автоматической авторизацией
-        async function loadNotesWithAuth() {
-            try {
-                await loadNotes();
-            } catch (error) {
-                console.error('[INIT] Ошибка загрузки заметок:', error);
-                
-                // Если ошибка авторизации - пробуем переавторизоваться
-                if (error.message && (error.message.includes('авторизац') || error.message.includes('401') || error.message.includes('Unauthorized'))) {
-                    console.log('[INIT] Ошибка авторизации, пробуем переавторизоваться...');
-                    
-                    // Очищаем старый токен
-                    clearSessionToken();
-                    
-                    // Пробуем получить initData
-                    const initData = extractInitData();
-                    if (initData) {
-                        console.log('[INIT] Есть initData, создаём новую сессию...');
-                        const success = await createAuthSession();
-                        if (success) {
-                            try {
-                                await loadNotes();
-                                return;
-                            } catch (retryError) {
-                                console.error('[INIT] Повторная ошибка после переавторизации:', retryError);
-                            }
-                        }
-                    }
-                    
-                    // Если ничего не помогло - очищаем все данные для чистого старта при следующем запуске
-                    clearAllAuthData();
-                }
-                
-                showNotInTelegramWarning();
-            }
-        }
         
         // Попытка загрузки данных даже без initData (для режима отладки на сервере)
         async function tryLoadWithoutVerification() {
