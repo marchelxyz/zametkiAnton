@@ -38,6 +38,38 @@
 | `BOT_TOKEN` | Токен вашего Telegram бота (обязательно для уведомлений) |
 | `DATABASE_URL` | Автоматически добавляется Railway при подключении PostgreSQL |
 
+#### Опционально: Настройка облачного хранилища для фотографий
+
+Приложение поддерживает хранение фотографий в облачных хранилищах. Если не настроено, файлы сохраняются в базе данных.
+
+**Вариант 1: Yandex Cloud S3 (рекомендуется)**
+
+| Переменная | Описание | Пример |
+|------------|----------|--------|
+| `STORAGE_TYPE` | Тип хранилища (установите `s3`) | `s3` |
+| `YC_S3_BUCKET_NAME` | Имя бакета в Yandex Cloud | `my-bucket` |
+| `YC_S3_ACCESS_KEY_ID` | Access Key ID от Yandex Cloud | `YCAJ...` |
+| `YC_S3_SECRET_ACCESS_KEY` | Secret Access Key от Yandex Cloud | `YCM...` |
+| `YC_S3_ENDPOINT_URL` | Endpoint URL (опционально) | `https://storage.yandexcloud.net` |
+| `YC_S3_REGION` | Регион (опционально) | `ru-central1` |
+
+**Как получить ключи доступа:**
+1. Перейдите в [Yandex Cloud Console](https://console.cloud.yandex.ru/)
+2. Создайте сервисный аккаунт или используйте существующий
+3. Создайте статический ключ доступа в разделе "Сервисные аккаунты"
+4. Создайте бакет в Object Storage
+5. Скопируйте ключи доступа и имя бакета в переменные окружения
+
+**Вариант 2: Google Cloud Storage**
+
+| Переменная | Описание | Пример |
+|------------|----------|--------|
+| `STORAGE_TYPE` | Тип хранилища (установите `gcs`) | `gcs` |
+| `GCS_BUCKET_NAME` | Имя бакета в Google Cloud | `my-bucket` |
+| `GCS_CREDENTIALS_BASE64` | Base64-encoded JSON credentials (опционально) | `eyJ0eXAiOiJKV1QiLCJ...` |
+
+**Примечание:** Если `STORAGE_TYPE` не задан, приложение автоматически определит доступное хранилище по наличию переменных окружения.
+
 ### Шаг 5: Настройка Mini App в BotFather
 
 1. Откройте [@BotFather](https://t.me/BotFather)

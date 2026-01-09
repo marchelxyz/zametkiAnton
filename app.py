@@ -26,7 +26,8 @@ from database import (
     get_or_create_web_user, get_web_user_by_token
 )
 from storage import (
-    is_gcs_available, generate_gcs_path, upload_to_gcs, download_from_gcs, delete_from_gcs
+    is_gcs_available, generate_gcs_path, upload_to_gcs, download_from_gcs, delete_from_gcs,
+    is_storage_available, generate_storage_path, upload_to_storage, download_from_storage, delete_from_storage
 )
 
 # Загружаем переменные окружения
@@ -756,27 +757,27 @@ def api_upload_attachment(note_id):
     # Определяем MIME тип
     mime_type = file.content_type
     
-    # Пробуем загрузить в Google Cloud Storage
-    gcs_path = None
+    # Пробуем загрузить в облачное хранилище (GCS или S3)
+    storage_path = None
     file_data_for_db = None
     
-    if is_gcs_available():
-        # Генерируем путь в GCS
-        gcs_path = generate_gcs_path(user_id, note_id, original_filename)
+    if is_storage_available():
+        # Генерируем путь в хранилище
+        storage_path = generate_storage_path(user_id, note_id, original_filename)
         
-        # Загружаем в GCS
-        success, result = upload_to_gcs(file_data, gcs_path, mime_type or 'application/octet-stream')
+        # Загружаем в хранилище
+        success, result = upload_to_storage(file_data, storage_path, mime_type or 'application/octet-stream')
         
         if success:
-            print(f"[UPLOAD] Файл загружен в GCS: {gcs_path}")
+            print(f"[UPLOAD] Файл загружен в облачное хранилище: {storage_path}")
         else:
-            # Если GCS не сработал, сохраняем в БД
-            print(f"[UPLOAD] Ошибка GCS, сохраняем в БД: {result}")
-            gcs_path = None
+            # Если хранилище не сработало, сохраняем в БД
+            print(f"[UPLOAD] Ошибка облачного хранилища, сохраняем в БД: {result}")
+            storage_path = None
             file_data_for_db = file_data
     else:
-        # GCS недоступен, сохраняем в БД
-        print("[UPLOAD] GCS недоступен, сохраняем в БД")
+        # Облачное хранилище недоступно, сохраняем в БД
+        print("[UPLOAD] Облачное хранилище недоступно, сохраняем в БД")
         file_data_for_db = file_data
     
     # Создаём запись в БД
@@ -787,7 +788,7 @@ def api_upload_attachment(note_id):
         file_data=file_data_for_db,
         mime_type=mime_type,
         file_size=file_size,
-        gcs_path=gcs_path
+        gcs_path=storage_path  # Используем storage_path (может быть путь в GCS или S3)
     )
     
     return jsonify({
@@ -819,18 +820,18 @@ def api_get_attachment(attachment_id):
     if not note:
         return jsonify({"error": "Attachment not found"}), 404
     
-    # Пробуем получить файл из GCS (приоритетно)
+    # Пробуем получить файл из облачного хранилища (приоритетно)
     file_data = None
     content_type = attachment.mime_type or 'application/octet-stream'
     
     if attachment.gcs_path:
-        # Файл хранится в Google Cloud Storage
-        success, data, result_type = download_from_gcs(attachment.gcs_path)
+        # Файл хранится в облачном хранилище (GCS или S3)
+        success, data, result_type = download_from_storage(attachment.gcs_path)
         if success:
             file_data = data
             content_type = result_type
         else:
-            print(f"[DOWNLOAD] Ошибка GCS: {result_type}, пробуем БД")
+            print(f"[DOWNLOAD] Ошибка облачного хранилища: {result_type}, пробуем БД")
     
     # Fallback: файл в БД
     if file_data is None and attachment.file_data:
@@ -871,9 +872,9 @@ def api_delete_attachment(attachment_id):
     if not note:
         return jsonify({"error": "Attachment not found"}), 404
     
-    # Удаляем файл из GCS если он там хранится
+    # Удаляем файл из облачного хранилища если он там хранится
     if attachment.gcs_path:
-        delete_from_gcs(attachment.gcs_path)
+        delete_from_storage(attachment.gcs_path)
     
     # Удаляем запись из БД
     delete_attachment(attachment_id)
