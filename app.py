@@ -396,9 +396,12 @@ def authenticate_user():
     Поддерживает три способа авторизации (в порядке приоритета):
     1. Web Access Token - для веб-версии без Telegram
     2. Session Token - авторизация через Telegram бота
-    3. Telegram initData - прямая авторизация через Telegram Mini App
+    3. Telegram initData - автоматическая авторизация через Telegram Mini App
     
     Возвращает данные пользователя или None.
+    
+    ВАЖНО: Для Telegram Mini Apps авторизация происходит автоматически
+    при первом запросе через initData. Пользователь не должен явно входить.
     """
     init_data, session_token, web_access_token = get_auth_headers()
     
@@ -412,7 +415,23 @@ def authenticate_user():
             print(f"[AUTH] ✗ Web access token невалиден")
     
     # Приоритет 2 и 3: Telegram авторизация
-    return verify_telegram_data(init_data, session_token)
+    # Если есть initData - автоматически авторизуем пользователя
+    user = verify_telegram_data(init_data, session_token)
+    
+    # Если авторизация успешна через initData, автоматически создаём/обновляем сессию
+    if user and init_data and not session_token:
+        try:
+            user_id = user.get('id')
+            first_name = user.get('first_name', '')
+            username = user.get('username', '')
+            # Автоматически создаём сессию для последующих запросов
+            auto_session_token = create_or_update_session(user_id, first_name, username)
+            print(f"[AUTH] ✓ Автоматически создана сессия для user_id={user_id}")
+        except Exception as e:
+            print(f"[AUTH] Предупреждение: не удалось автоматически создать сессию: {e}")
+            # Продолжаем работу без сессии, используя initData
+    
+    return user
 
 
 @app.route('/')
