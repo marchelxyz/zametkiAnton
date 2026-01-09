@@ -278,26 +278,34 @@ def verify_telegram_data(init_data: str, session_token: str = None) -> dict:
         return None
     
     try:
-        # Парсим init_data с URL-декодированием значений
-        # КРИТИЧНО: Telegram отправляет данные в URL-encoded формате
-        parsed_data = {}
+        # Парсим init_data БЕЗ URL-декодирования для проверки подписи
+        # КРИТИЧНО: Для проверки hash/signature нужно использовать оригинальные значения из строки
+        parsed_data_raw = {}  # Оригинальные значения для проверки подписи
+        parsed_data_decoded = {}  # Декодированные значения для использования
+        
         for pair in init_data.split('&'):
             if '=' in pair:
                 key, value = pair.split('=', 1)
-                # URL-декодируем значение
-                parsed_data[key] = unquote(value)
+                # Сохраняем оригинальное значение для проверки подписи
+                parsed_data_raw[key] = value
+                # Сохраняем декодированное значение для использования
+                parsed_data_decoded[key] = unquote(value)
         
         # Определяем формат верификации: signature (новый) или hash (старый)
-        received_signature = parsed_data.pop('signature', '')
-        received_hash = parsed_data.pop('hash', '')
+        received_signature = parsed_data_raw.pop('signature', '')
+        received_hash = parsed_data_raw.pop('hash', '')
+        
+        # Также удаляем из декодированных данных
+        parsed_data_decoded.pop('signature', '')
+        parsed_data_decoded.pop('hash', '')
         
         if not received_signature and not received_hash:
             print("[AUTH] Ошибка верификации: ни signature, ни hash не найдены в init_data")
-            print(f"[AUTH]   - Доступные ключи: {list(parsed_data.keys())}")
+            print(f"[AUTH]   - Доступные ключи: {list(parsed_data_raw.keys())}")
             return None
         
         # Проверяем auth_date (данные не должны быть старше 24 часов)
-        auth_date_str = parsed_data.get('auth_date', '')
+        auth_date_str = parsed_data_decoded.get('auth_date', '')
         if auth_date_str:
             try:
                 from datetime import datetime, timezone
@@ -316,8 +324,9 @@ def verify_telegram_data(init_data: str, session_token: str = None) -> dict:
                 print(f"[AUTH] Не удалось проверить auth_date: {e}")
         
         # Сортируем по ключу и создаём строку для проверки подписи
+        # ВАЖНО: Используем оригинальные (не декодированные) значения для проверки подписи
         # Формат: key=value\nkey=value\n...
-        data_check_string = '\n'.join(f"{k}={v}" for k, v in sorted(parsed_data.items()))
+        data_check_string = '\n'.join(f"{k}={v}" for k, v in sorted(parsed_data_raw.items()))
         
         # Проверяем подпись в зависимости от формата
         # Пробуем оба метода если первый не сработал
@@ -360,12 +369,13 @@ def verify_telegram_data(init_data: str, session_token: str = None) -> dict:
             
             print(f"[AUTH]   - Метод: {verification_method}")
             print(f"[AUTH]   - BOT_TOKEN начинается с: {BOT_TOKEN[:15] if BOT_TOKEN else 'НЕ ЗАДАН'}...")
-            print(f"[AUTH]   - Ключи в данных: {list(parsed_data.keys())}")
+            print(f"[AUTH]   - Ключи в данных: {list(parsed_data_raw.keys())}")
+            print(f"[AUTH]   - data_check_string полный: {repr(data_check_string)}")
             print(f"[AUTH]   - Проверьте, что BOT_TOKEN совпадает с токеном бота в BotFather")
         
         if verification_success:
-            # Подпись верна, извлекаем данные пользователя
-            user_json = parsed_data.get('user', '{}')
+            # Подпись верна, извлекаем данные пользователя из декодированных данных
+            user_json = parsed_data_decoded.get('user', '{}')
             user_data = json.loads(user_json)
             print(f"[AUTH] ✓ Верификация успешна ({verification_method}) для пользователя: {user_data.get('id')} ({user_data.get('username', 'no username')})")
             return user_data
@@ -418,18 +428,9 @@ def authenticate_user():
     # Если есть initData - автоматически авторизуем пользователя
     user = verify_telegram_data(init_data, session_token)
     
-    # Если авторизация успешна через initData, автоматически создаём/обновляем сессию
-    if user and init_data and not session_token:
-        try:
-            user_id = user.get('id')
-            first_name = user.get('first_name', '')
-            username = user.get('username', '')
-            # Автоматически создаём сессию для последующих запросов
-            auto_session_token = create_or_update_session(user_id, first_name, username)
-            print(f"[AUTH] ✓ Автоматически создана сессия для user_id={user_id}")
-        except Exception as e:
-            print(f"[AUTH] Предупреждение: не удалось автоматически создать сессию: {e}")
-            # Продолжаем работу без сессии, используя initData
+    # Примечание: Автоматическое создание сессии происходит на фронтенде
+    # через /api/auth/session при первом запросе, а не здесь при каждом запросе
+    # Это позволяет избежать проблем с производительностью и конфликтами БД
     
     return user
 
@@ -566,7 +567,7 @@ def api_get_notes():
     user = authenticate_user()
     
     if not user:
-        init_data, session_token = get_auth_headers()
+        init_data, session_token, web_access_token = get_auth_headers()
         # Возвращаем более детальную информацию об ошибке
         error_details = {
             "error": "Unauthorized",
@@ -918,7 +919,7 @@ def health():
 @app.route('/api/debug/auth', methods=['GET'])
 def debug_auth():
     """Диагностика авторизации (только для отладки)"""
-    init_data, session_token = get_auth_headers()
+    init_data, session_token, web_access_token = get_auth_headers()
     
     debug_info = {
         "init_data_present": bool(init_data),
@@ -1298,6 +1299,36 @@ def ensure_initialized():
         initialize_app()
     
     return None
+
+
+@app.errorhandler(500)
+def handle_500_error(e):
+    """Обработчик ошибок 500 - возвращает JSON вместо HTML"""
+    print(f"[ERROR] 500 Internal Server Error: {e}")
+    import traceback
+    traceback.print_exc()
+    return jsonify({
+        "error": "Internal Server Error",
+        "message": "Произошла внутренняя ошибка сервера. Пожалуйста, попробуйте позже."
+    }), 500
+
+
+@app.errorhandler(Exception)
+def handle_exception(e):
+    """Глобальный обработчик всех исключений"""
+    print(f"[ERROR] Необработанное исключение: {e}")
+    import traceback
+    traceback.print_exc()
+    
+    # Если это API запрос - возвращаем JSON
+    if request.path.startswith('/api/'):
+        return jsonify({
+            "error": "Internal Server Error",
+            "message": f"Произошла ошибка: {str(e)}"
+        }), 500
+    
+    # Иначе возвращаем стандартный ответ Flask
+    return str(e), 500
 
 
 # Регистрируем остановку планировщика при выходе
