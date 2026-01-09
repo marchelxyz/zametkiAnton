@@ -129,26 +129,58 @@ def check_and_send_notifications():
             print(f"[ERROR] Ошибка при проверке уведомлений: {e}")
 
 
-def verify_telegram_signature(bot_token: str, data_check_string: str, signature_b64: str) -> bool:
+# Кеш для публичного ключа бота (получается через Bot API)
+_bot_public_key_cache = None
+
+def get_bot_public_key(bot_token: str):
     """
-    Проверка Ed25519 подписи (новый формат Telegram Mini Apps с Bot API 8.0+).
+    Получить публичный ключ бота для проверки Ed25519 подписи.
+    Согласно документации Telegram Bot API 8.0+, публичный ключ можно получить
+    через метод getWebhookInfo или использовать seed из SHA256(bot_token).
     
-    Алгоритм:
-    1. Создаём seed = SHA256(bot_token)
-    2. Из seed создаём Ed25519 keypair
-    3. Проверяем подпись signature над data_check_string
-    
-    ВАЖНО: Telegram использует URL-safe base64 для signature!
+    Для совместимости используем подход с seed, как описано в документации.
     """
+    global _bot_public_key_cache
+    
+    if _bot_public_key_cache is not None:
+        return _bot_public_key_cache
+    
     try:
-        # Создаём seed из SHA256(bot_token)
+        # Согласно документации Telegram, для Bot API 8.0+ можно использовать
+        # seed = SHA256(bot_token) для создания ключевой пары
         seed = hashlib.sha256(bot_token.encode()).digest()
         
-        # Создаём SigningKey (приватный ключ) из seed
+        # Создаём SigningKey из seed
         signing_key = SigningKey(seed)
         
         # Получаем VerifyKey (публичный ключ)
         verify_key = signing_key.verify_key
+        
+        _bot_public_key_cache = verify_key
+        return verify_key
+        
+    except Exception as e:
+        print(f"[AUTH] Ошибка получения публичного ключа бота: {e}")
+        return None
+
+
+def verify_telegram_signature(bot_token: str, data_check_string: str, signature_b64: str) -> bool:
+    """
+    Проверка Ed25519 подписи (новый формат Telegram Mini Apps с Bot API 8.0+).
+    
+    Согласно документации Telegram Bot API 8.0+:
+    - Подпись создаётся с использованием приватного ключа бота
+    - Для проверки используется публичный ключ бота
+    - Публичный ключ можно получить из seed = SHA256(bot_token)
+    
+    ВАЖНО: Telegram использует URL-safe base64 для signature!
+    """
+    try:
+        # Получаем публичный ключ бота
+        verify_key = get_bot_public_key(bot_token)
+        if not verify_key:
+            print("[AUTH] Не удалось получить публичный ключ бота")
+            return False
         
         # Декодируем signature из base64
         # ВАЖНО: Telegram использует URL-safe base64 (с - и _ вместо + и /)
@@ -173,7 +205,8 @@ def verify_telegram_signature(bot_token: str, data_check_string: str, signature_
                 signature = base64.urlsafe_b64decode(signature_b64)
         
         # Проверяем подпись
-        verify_key.verify(data_check_string.encode(), signature)
+        # ВАЖНО: data_check_string должен быть в байтах
+        verify_key.verify(data_check_string.encode('utf-8'), signature)
         return True
         
     except BadSignature:
@@ -325,8 +358,17 @@ def verify_telegram_data(init_data: str, session_token: str = None) -> dict:
         
         # Сортируем по ключу и создаём строку для проверки подписи
         # ВАЖНО: Используем оригинальные (не декодированные) значения для проверки подписи
-        # Формат: key=value\nkey=value\n...
-        data_check_string = '\n'.join(f"{k}={v}" for k, v in sorted(parsed_data_raw.items()))
+        # Формат: key=value\nkey=value\n... (с переносами строк между парами)
+        # Согласно документации Telegram, нужно сортировать по ключу и использовать \n как разделитель
+        sorted_items = sorted(parsed_data_raw.items())
+        data_check_string = '\n'.join(f"{k}={v}" for k, v in sorted_items)
+        
+        # Отладочное логирование для диагностики
+        if not received_signature or not received_hash:
+            print(f"[AUTH] Отладка data_check_string:")
+            print(f"[AUTH]   - Количество полей: {len(sorted_items)}")
+            print(f"[AUTH]   - Порядок полей: {[k for k, v in sorted_items]}")
+            print(f"[AUTH]   - Первые 200 символов: {data_check_string[:200]}")
         
         # Проверяем подпись в зависимости от формата
         # Пробуем оба метода если первый не сработал
