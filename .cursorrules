@@ -1,0 +1,42 @@
+# Правила для работы с проектом
+
+## Работа с Git и GitHub
+
+### Создание веток
+
+**КРИТИЧНО ВАЖНО:** Для каждого нового изменения/фикса/фичи создавать ОТДЕЛЬНУЮ новую ветку от актуального `main`.
+
+### Алгоритм действий:
+
+1. Переключиться на `main`: `git checkout main`
+2. Обновить `main`: `git pull origin main`
+3. Создать новую ветку: `git checkout -b feature/название` или `git checkout -b fix/название`
+4. Внести изменения и закоммитить
+5. Запушить ветку: `git push -u origin название-ветки`
+6. Создать PR через `mcp_github_create_pull_request`
+7. **НЕМЕДЛЕННО** открыть PR во внутреннем браузере через `mcp_cursor-ide-browser_browser_navigate(url=result["html_url"])`
+
+### Пример правильной последовательности:
+
+```bash
+# 1. Переключиться на main и обновить
+git checkout main
+git pull origin main
+
+# 2. Создать новую ветку
+git checkout -b fix/название-проблемы
+
+# 3. Внести изменения, закоммитить и запушить
+git add .
+git commit -m "fix: описание"
+git push -u origin fix/название-проблемы
+
+# 4. Создать PR и открыть его
+result = mcp_github_create_pull_request(...)
+if result.get("html_url"):
+    mcp_cursor-ide-browser_browser_navigate(url=result["html_url"])
+```
+
+**НЕ ЗАБЫВАТЬ:** 
+- Каждое изменение = новая ветка от актуального main
+- После создания PR ОБЯЗАТЕЛЬНО открывать его во внутреннем браузере
